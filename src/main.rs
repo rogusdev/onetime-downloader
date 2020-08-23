@@ -82,7 +82,7 @@ aws dynamodb create-table \
 // }
 
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct OnetimeDownloaderConfig {
     api_key_files: String,
     api_key_links: String,
@@ -115,165 +115,159 @@ impl OnetimeDownloaderConfig {
     }
 }
 
-struct OnetimeDownloader {
-    config: OnetimeDownloaderConfig
+
+#[derive(Debug, Clone)]
+struct DynamodbStorage {
+    files_table: String,
+    links_table: String,
 }
 
-impl OnetimeDownloader {
-    const API_KEY_HEADER: &'static str = "X-Api-Key";
+impl DynamodbStorage {
+    const DEFAULT_TABLE_FILES: &'static str = "Ontetime.Files";
+    const DEFAULT_TABLE_LINKS: &'static str = "Ontetime.Links";
+}
 
-    fn check_api_key (req: &HttpRequest, api_key: &str) -> Result<bool, HttpResponse> {
-        let valid_api_key = match req.headers().get(Self::API_KEY_HEADER) {
-            Some(v) => v == api_key,
-            _ => false
-        };
-        if !valid_api_key {
-            return Err(HttpResponse::Unauthorized().body("Invalid or missing api key!"))
-        }
+
+const API_KEY_HEADER: &'static str = "X-Api-Key";
+
+fn check_api_key (req: &HttpRequest, api_key: &str) -> Result<bool, HttpResponse> {
+    let valid_api_key = match req.headers().get(API_KEY_HEADER) {
+        Some(v) => v == api_key,
+        _ => false
+    };
+    if !valid_api_key {
+        return Err(HttpResponse::Unauthorized().body("Invalid or missing api key!"))
+    }
+    Ok(true)
+}
+
+fn check_rate_limit (req: &HttpRequest) -> Result<bool, HttpResponse> {
+    let valid_ip = match req.connection_info().remote() {
+        Some(ip) => ip != "0.0.0.0",
+        _ => false
+    };
+    if valid_ip {
         Ok(true)
+    } else {
+        Err(HttpResponse::TooManyRequests().finish())
     }
+}
 
-    fn check_rate_limit (req: &HttpRequest) -> Result<bool, HttpResponse> {
-        let valid_ip = match req.connection_info().remote() {
-            Some(ip) => ip != "0.0.0.0",
-            _ => false
-        };
-        if valid_ip {
-            Ok(true)
-        } else {
-            Err(HttpResponse::TooManyRequests().finish())
+async fn list_files(req: HttpRequest, config: web::Data<OnetimeDownloaderConfig>) -> Result<HttpResponse, Error> {
+    println!("list files");
+
+    // https://docs.rs/rusoto_dynamodb/0.44.0/rusoto_dynamodb/
+    let client = DynamoDbClient::new(Region::UsEast1);
+    let request = ListTablesInput::default();
+    // https://rusoto.github.io/rusoto/rusoto_dynamodb/struct.ListTablesOutput.html
+    let response = client.list_tables(request).await;
+    println!("Tables found: {:?}", response);
+
+    Ok(HttpResponse::Ok().body("list files!"))
+}
+
+async fn list_links(req: HttpRequest, config: web::Data<OnetimeDownloaderConfig>) -> Result<HttpResponse, Error> {
+    println!("list links");
+
+    // https://docs.rs/rusoto_dynamodb/0.44.0/rusoto_dynamodb/
+    let client = DynamoDbClient::new(Region::UsEast1);
+    let request = ListTablesInput::default();
+    // https://rusoto.github.io/rusoto/rusoto_dynamodb/struct.ListTablesOutput.html
+    let response = client.list_tables(request).await;
+    println!("Tables found: {:?}", response);
+
+    Ok(HttpResponse::Ok().body("list links!"))
+}
+
+async fn collect_chunks(mut field: Field, max: usize) -> Result<Vec<u8>, HttpResponse> {
+    let mut size = 0;
+    let mut val = Vec::new();
+    while let Some(chunk) = field.next().await {
+        let data = chunk.unwrap();
+        size += data.len();
+        if size > max {
+            return Err(HttpResponse::BadRequest().body(format!("field value too big! {}", size)))
         }
+        val.append(&mut data.to_vec());
     }
+    Ok(val)
+}
 
-    async fn list_files(&self, req: HttpRequest) -> Result<HttpResponse, Error> {
-        println!("list files");
+async fn add_file(req: HttpRequest, mut payload: Multipart, config: web::Data<OnetimeDownloaderConfig>) -> Result<HttpResponse, Error> {
+    println!("add file");
+    check_api_key(&req, config.api_key_files.as_str())?;
+    check_rate_limit(&req)?;
 
-        // https://docs.rs/rusoto_dynamodb/0.44.0/rusoto_dynamodb/
-        let client = DynamoDbClient::new(Region::UsEast1);
-        let request = ListTablesInput::default();
-        // https://rusoto.github.io/rusoto/rusoto_dynamodb/struct.ListTablesOutput.html
-        let response = client.list_tables(request).await;
-        println!("Tables found: {:?}", response);
+    let mut string_values = HashMap::new();
 
-        Ok(HttpResponse::Ok().body("list files!"))
-    }
+    while let Ok(Some(field)) = payload.try_next().await {
+        let content_disposition = field.content_disposition().unwrap();
+        let field_name = content_disposition.get_name().unwrap().to_owned();
 
-    async fn list_links(&self, req: HttpRequest) -> Result<HttpResponse, Error> {
-        println!("list links");
-
-        // https://docs.rs/rusoto_dynamodb/0.44.0/rusoto_dynamodb/
-        let client = DynamoDbClient::new(Region::UsEast1);
-        let request = ListTablesInput::default();
-        // https://rusoto.github.io/rusoto/rusoto_dynamodb/struct.ListTablesOutput.html
-        let response = client.list_tables(request).await;
-        println!("Tables found: {:?}", response);
-
-        Ok(HttpResponse::Ok().body("list links!"))
-    }
-
-    async fn collect_chunks(mut field: Field, max: usize) -> Result<Vec<u8>, HttpResponse> {
-        let mut size = 0;
-        let mut val = Vec::new();
-        while let Some(chunk) = field.next().await {
-            let data = chunk.unwrap();
-            size += data.len();
-            if size > max {
-                return Err(HttpResponse::BadRequest().body(format!("field value too big! {}", size)))
+        match content_disposition.get_filename() {
+            Some(filename) => {
+                println!("'{}' filename '{}'", field_name, filename);
+                let val = collect_chunks(field, config.max_len_file).await?;
+                println!("file:\n{:?}", val);
             }
-            val.append(&mut data.to_vec());
-        }
-        Ok(val)
-    }
-
-    async fn add_file(&self, req: HttpRequest, mut payload: Multipart) -> Result<HttpResponse, Error> {
-        println!("add file");
-        Self::check_api_key(&req, "apikey")?;
-        Self::check_rate_limit(&req)?;
-
-        let mut string_values = HashMap::new();
-
-        while let Ok(Some(field)) = payload.try_next().await {
-            let content_disposition = field.content_disposition().unwrap();
-            let field_name = content_disposition.get_name().unwrap().to_owned();
-
-            match content_disposition.get_filename() {
-                Some(filename) => {
-                    println!("'{}' filename '{}'", field_name, filename);
-                    let val = Self::collect_chunks(field, self.config.max_len_file).await?;
-                    println!("file:\n{:?}", val);
-                }
-                None => {
-                    println!("'{}' not a file!", field_name);
-                    let val = Self::collect_chunks(field, self.config.max_len_value).await?;
-                    string_values.insert(field_name, String::from_utf8(val).unwrap());
-                }
+            None => {
+                println!("'{}' not a file!", field_name);
+                let val = collect_chunks(field, config.max_len_value).await?;
+                string_values.insert(field_name, String::from_utf8(val).unwrap());
             }
         }
-
-        //println!("field filename {:?}", string_values.get("filename").unwrap());
-        Ok(HttpResponse::Ok().body("added file"))
     }
 
-    async fn add_link(&self, req: HttpRequest, mut payload: Multipart) -> Result<HttpResponse, Error> {
-        println!("add link");
-        Self::check_api_key(&req, "apikey")?;
-        Self::check_rate_limit(&req)?;
+    //println!("field filename {:?}", string_values.get("filename").unwrap());
+    Ok(HttpResponse::Ok().body("added file"))
+}
 
-        // https://actix.rs/docs/response/
-        Ok(HttpResponse::Ok()
-            .content_type("text/plain")
-            .body("https://www.google.com/"))
+async fn add_link(req: HttpRequest, mut payload: Multipart, config: web::Data<OnetimeDownloaderConfig>) -> Result<HttpResponse, Error> {
+    println!("add link");
+    check_api_key(&req, config.api_key_links.as_str())?;
+    check_rate_limit(&req)?;
+
+    // https://actix.rs/docs/response/
+    Ok(HttpResponse::Ok()
+        .content_type("text/plain")
+        .body("https://www.google.com/"))
+}
+
+async fn download_link(req: HttpRequest, config: web::Data<OnetimeDownloaderConfig>) -> HttpResponse {
+    println!("download link");
+    if let Err(badreq) = check_rate_limit(&req) {
+        return badreq
     }
+    let link = req.match_info().get("link").unwrap();
+    println!("downloading... {}", link);
 
-    async fn download_link(&self, req: HttpRequest) -> HttpResponse {
-        println!("download link");
-        if let Err(badreq) = Self::check_rate_limit(&req) {
-            return badreq
-        }
-        let link = req.match_info().get("link").unwrap();
-        println!("downloading... {}", link);
+    let b = Bytes::from(&b"Hello world"[..]);
 
-        let b = Bytes::from(&b"Hello world"[..]);
-
-        // https://github.com/actix/examples/blob/master/basics/src/main.rs
-        HttpResponse::Ok()
-            .content_type("application/octet-stream")
-            .body(b)
-    }
+    // https://github.com/actix/examples/blob/master/basics/src/main.rs
+    HttpResponse::Ok()
+        .content_type("application/octet-stream")
+        .body(b)
 }
 
 
 #[actix_rt::main]
 async fn main() -> io::Result<()> {
     dotenv().ok();
-    let config = OnetimeDownloaderConfig::from_env();
-    println!("config {:?}", config);
-
 
     HttpServer::new(|| {
-        let app = OnetimeDownloader { config };
+        let config = OnetimeDownloaderConfig::from_env();
+        println!("config {:?}", config);
 
-        fn list_files(req: HttpRequest) { app.list_files(req) }
-        fn list_links(req: HttpRequest) { app.list_links(req) }
-        fn add_file(req: HttpRequest, payload: Multipart) { app.add_file(req, payload) }
-        fn add_link(req: HttpRequest, payload: Multipart) { app.add_link(req, payload) }
-        fn download_link(req: HttpRequest) { app.download_link(req) }
-
-        App::new().service(
-            web::scope("/api")
-                // these lambdas annoy me: I want to pass references to methods on objects, same as global methods
-                //  yes I know that that would require a closure, I want the compiler to be smart enough to create one
-                .route("files", web::get().to(list_files))
-                .route("links", web::get().to(list_links))
-                .route("files", web::post().to(add_file))
-                .route("links", web::post().to(add_link))
-                .route("download/{link}", web::get().to(download_link)),
-                // .route("files", web::get().to(list_files))
-                // .route("links", web::get().to(list_links))
-                // .route("files", web::post().to(add_file))
-                // .route("links", web::post().to(add_link))
-                // .route("download/{link}", web::get().to(download_link)),
-        )
+        App::new()
+            .data(config)
+            .service(
+                web::scope("/api")
+                    .route("files", web::get().to(list_files))
+                    .route("links", web::get().to(list_links))
+                    .route("files", web::post().to(add_file))
+                    .route("links", web::post().to(add_link))
+                    .route("download/{link}", web::get().to(download_link)),
+            )
     })
     .bind("127.0.0.1:8080")?
     .run()
