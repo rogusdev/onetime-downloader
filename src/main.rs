@@ -12,6 +12,8 @@ use actix_web::{web, App, Error, HttpRequest, HttpResponse, HttpServer};
 use actix_multipart::{Field, Multipart};
 use futures::{StreamExt, TryStreamExt}; // adds... something for multipart processsing
 
+use async_trait::async_trait;
+
 
 /*
 
@@ -91,30 +93,61 @@ struct OnetimeDownloaderConfig {
 }
 
 impl OnetimeDownloaderConfig {
+    const EMPTY_STRING: String = String::new();
     const DEFAULT_MAX_LEN_FILE: usize = 100000;
     const DEFAULT_MAX_LEN_VALUE: usize = 80;
 
-    fn env_var_string(name: &str) -> String {
-        env::var(name).unwrap_or_default()
+    fn env_var_string (name: &str, default: String) -> String {
+        env::var(name).unwrap_or(default)
     }
 
-    fn env_var_parse<T : std::str::FromStr>(name: &str, default: T) -> T {
+    fn env_var_parse<T : std::str::FromStr> (name: &str, default: T) -> T {
         match env::var(name) {
             Ok(s) => s.parse::<T>().unwrap_or(default),
             _ => default
         }
     }
 
-    fn from_env() -> OnetimeDownloaderConfig {
+    fn from_env () -> OnetimeDownloaderConfig {
         OnetimeDownloaderConfig {
-            api_key_files: Self::env_var_string("FILES_API_KEY"),
-            api_key_links: Self::env_var_string("LINKS_API_KEY"),
+            api_key_files: Self::env_var_string("FILES_API_KEY", Self::EMPTY_STRING),
+            api_key_links: Self::env_var_string("LINKS_API_KEY", Self::EMPTY_STRING),
             max_len_file: Self::env_var_parse("FILE_MAX_LEN", Self::DEFAULT_MAX_LEN_FILE),
             max_len_value: Self::env_var_parse("VALUE_MAX_LEN", Self::DEFAULT_MAX_LEN_VALUE),
         }
     }
 }
 
+#[derive(Debug, Clone)]
+struct OnetimeFile {
+    filename: String,
+    contents: Bytes,
+    created_at: i32,
+    updated_at: i32,
+}
+
+#[async_trait]
+trait FilesStorage {
+    async fn add_file (file: OnetimeFile) -> Result<bool, Error>;
+    async fn list_files () -> Result<Vec<OnetimeFile>, Error>;
+    async fn get_file (filename: String) -> Result<Option<OnetimeFile>, Error>;
+}
+
+#[derive(Debug, Clone)]
+struct OnetimeLink {
+    filename: String,
+    link: String,
+    created_at: i32,
+    downloaded_at: i32,
+    ip: Option<String>,
+}
+
+#[async_trait]
+trait LinksStorage {
+    async fn add_link (link: OnetimeLink) -> Result<bool, Error>;
+    async fn list_links () -> Result<Vec<OnetimeLink>, Error>;
+    async fn get_link (link: String) -> Result<Option<OnetimeLink>, Error>;
+}
 
 #[derive(Debug, Clone)]
 struct DynamodbStorage {
@@ -125,6 +158,79 @@ struct DynamodbStorage {
 impl DynamodbStorage {
     const DEFAULT_TABLE_FILES: &'static str = "Ontetime.Files";
     const DEFAULT_TABLE_LINKS: &'static str = "Ontetime.Links";
+
+    fn from_env () -> DynamodbStorage {
+        DynamodbStorage {
+            files_table: OnetimeDownloaderConfig::env_var_string("DDB_FILES_TABLE", String::from(Self::DEFAULT_TABLE_FILES)),
+            links_table: OnetimeDownloaderConfig::env_var_string("DDB_LINKS_TABLE", String::from(Self::DEFAULT_TABLE_LINKS)),
+        }
+    }
+}
+
+#[async_trait]
+impl FilesStorage for DynamodbStorage {
+    async fn add_file (file: OnetimeFile) -> Result<bool, Error> {
+        Ok(false)
+    }
+
+    async fn list_files () -> Result<Vec<OnetimeFile>, Error>  {
+        // https://docs.rs/rusoto_dynamodb/0.44.0/rusoto_dynamodb/
+        let client = DynamoDbClient::new(Region::UsEast1);
+        let request = ListTablesInput::default();
+        // https://rusoto.github.io/rusoto/rusoto_dynamodb/struct.ListTablesOutput.html
+        let response = client.list_tables(request).await;
+        println!("Tables (files) found: {:?}", response);
+
+        let mut vec = Vec::new();
+        vec.push(OnetimeFile {
+            filename: String::from("file.zip"),
+            contents: Bytes::from(&b"Hello world"[..]),
+            created_at: 123,
+            updated_at: 456,
+        });
+        Ok(vec)
+    }
+
+    async fn get_file (filename: String) -> Result<Option<OnetimeFile>, Error>  {
+        Ok(None)
+    }
+}
+
+#[async_trait]
+impl LinksStorage for DynamodbStorage {
+    async fn add_link (link: OnetimeLink) -> Result<bool, Error> {
+        Ok(false)
+    }
+
+    async fn list_links () -> Result<Vec<OnetimeLink>, Error> {
+        // https://docs.rs/rusoto_dynamodb/0.44.0/rusoto_dynamodb/
+        let client = DynamoDbClient::new(Region::UsEast1);
+        let request = ListTablesInput::default();
+        // https://rusoto.github.io/rusoto/rusoto_dynamodb/struct.ListTablesOutput.html
+        let response = client.list_tables(request).await;
+        println!("Tables (links) found: {:?}", response);
+
+        let mut vec = Vec::new();
+        vec.push(OnetimeLink {
+            filename: String::from("file.zip"),
+            link: String::from("abc123"),
+            created_at: 123,
+            downloaded_at: 456,
+            ip: None,
+        });
+        Ok(vec)
+    }
+
+    async fn get_link (link: String) -> Result<Option<OnetimeLink>, Error> {
+        Ok(None)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct OnetimeDownloaderService {
+    config: OnetimeDownloaderConfig,
+    storage_files: FilesStorage,
+    storage_links: LinksStorage,
 }
 
 
@@ -153,33 +259,31 @@ fn check_rate_limit (req: &HttpRequest) -> Result<bool, HttpResponse> {
     }
 }
 
-async fn list_files(req: HttpRequest, config: web::Data<OnetimeDownloaderConfig>) -> Result<HttpResponse, Error> {
+async fn list_files (
+    req: HttpRequest,
+    config: web::Data<OnetimeDownloaderConfig>,
+    service: web::Data<OnetimeDownloaderService>,
+) -> Result<HttpResponse, Error> {
     println!("list files");
 
-    // https://docs.rs/rusoto_dynamodb/0.44.0/rusoto_dynamodb/
-    let client = DynamoDbClient::new(Region::UsEast1);
-    let request = ListTablesInput::default();
-    // https://rusoto.github.io/rusoto/rusoto_dynamodb/struct.ListTablesOutput.html
-    let response = client.list_tables(request).await;
-    println!("Tables found: {:?}", response);
+    service.storage_files.list_files().await;
 
     Ok(HttpResponse::Ok().body("list files!"))
 }
 
-async fn list_links(req: HttpRequest, config: web::Data<OnetimeDownloaderConfig>) -> Result<HttpResponse, Error> {
+async fn list_links (
+    req: HttpRequest,
+    config: web::Data<OnetimeDownloaderConfig>,
+    service: web::Data<OnetimeDownloaderService>,
+) -> Result<HttpResponse, Error> {
     println!("list links");
 
-    // https://docs.rs/rusoto_dynamodb/0.44.0/rusoto_dynamodb/
-    let client = DynamoDbClient::new(Region::UsEast1);
-    let request = ListTablesInput::default();
-    // https://rusoto.github.io/rusoto/rusoto_dynamodb/struct.ListTablesOutput.html
-    let response = client.list_tables(request).await;
-    println!("Tables found: {:?}", response);
+    service.storage_links.list_links().await;
 
     Ok(HttpResponse::Ok().body("list links!"))
 }
 
-async fn collect_chunks(mut field: Field, max: usize) -> Result<Vec<u8>, HttpResponse> {
+async fn collect_chunks (mut field: Field, max: usize) -> Result<Vec<u8>, HttpResponse> {
     let mut size = 0;
     let mut val = Vec::new();
     while let Some(chunk) = field.next().await {
@@ -193,7 +297,7 @@ async fn collect_chunks(mut field: Field, max: usize) -> Result<Vec<u8>, HttpRes
     Ok(val)
 }
 
-async fn add_file(req: HttpRequest, mut payload: Multipart, config: web::Data<OnetimeDownloaderConfig>) -> Result<HttpResponse, Error> {
+async fn add_file (req: HttpRequest, mut payload: Multipart, config: web::Data<OnetimeDownloaderConfig>) -> Result<HttpResponse, Error> {
     println!("add file");
     check_api_key(&req, config.api_key_files.as_str())?;
     check_rate_limit(&req)?;
@@ -222,7 +326,7 @@ async fn add_file(req: HttpRequest, mut payload: Multipart, config: web::Data<On
     Ok(HttpResponse::Ok().body("added file"))
 }
 
-async fn add_link(req: HttpRequest, mut payload: Multipart, config: web::Data<OnetimeDownloaderConfig>) -> Result<HttpResponse, Error> {
+async fn add_link (req: HttpRequest, mut payload: Multipart, config: web::Data<OnetimeDownloaderConfig>) -> Result<HttpResponse, Error> {
     println!("add link");
     check_api_key(&req, config.api_key_links.as_str())?;
     check_rate_limit(&req)?;
@@ -233,7 +337,7 @@ async fn add_link(req: HttpRequest, mut payload: Multipart, config: web::Data<On
         .body("https://www.google.com/"))
 }
 
-async fn download_link(req: HttpRequest, config: web::Data<OnetimeDownloaderConfig>) -> HttpResponse {
+async fn download_link (req: HttpRequest, config: web::Data<OnetimeDownloaderConfig>) -> HttpResponse {
     println!("download link");
     if let Err(badreq) = check_rate_limit(&req) {
         return badreq
@@ -251,15 +355,23 @@ async fn download_link(req: HttpRequest, config: web::Data<OnetimeDownloaderConf
 
 
 #[actix_rt::main]
-async fn main() -> io::Result<()> {
+async fn main () -> io::Result<()> {
     dotenv().ok();
 
     HttpServer::new(|| {
         let config = OnetimeDownloaderConfig::from_env();
         println!("config {:?}", config);
+        let storage = DynamodbStorage::from_env();
+        println!("storage {:?}", storage);
+        let service = OnetimeDownloaderService {
+            config: config,
+            storage_files: storage,
+            storage_links: storage,
+        };
 
         App::new()
             .data(config)
+            .data(service)
             .service(
                 web::scope("/api")
                     .route("files", web::get().to(list_files))
