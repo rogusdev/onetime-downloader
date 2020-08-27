@@ -437,28 +437,33 @@ async fn download_link (
         .body(b)
 }
 
+fn build_service () -> OnetimeDownloaderService {
+    let time_provider = SystemTimeProvider {};
+
+    let config = OnetimeDownloaderConfig::from_env();
+    println!("config {:?}", config);
+
+    // TODO: what I want is to have a single instance get passed as traits (interfaces) that can be swapped out by config
+    let storage_files = DynamodbStorage::from_env(SystemTimeProvider {});
+    let storage_links = DynamodbStorage::from_env(SystemTimeProvider {});
+    println!("storage {:?}", storage_files);
+
+    OnetimeDownloaderService {
+        time_provider: time_provider,
+        config: config,
+        storage_files: storage_files,
+        storage_links: storage_links,
+    }
+}
+
 
 #[actix_rt::main]
 async fn main () -> io::Result<()> {
     dotenv().ok();
 
     HttpServer::new(|| {
-        let time_provider = SystemTimeProvider {};
-        let config = OnetimeDownloaderConfig::from_env();
-        println!("config {:?}", config);
-        // TODO: what I want is to have a single instance get passed as traits (interfaces) that can be swapped out by config
-        let storage_files = DynamodbStorage::from_env(SystemTimeProvider {});
-        let storage_links = DynamodbStorage::from_env(SystemTimeProvider {});
-        println!("storage {:?}", storage_files);
-        let service = OnetimeDownloaderService {
-            time_provider: time_provider,
-            config: config,
-            storage_files: storage_files,
-            storage_links: storage_links,
-        };
-
         App::new()
-            .data(service)
+            .data(build_service())
             .service(
                 web::scope("/api")
                     .route("files", web::get().to(list_files))
