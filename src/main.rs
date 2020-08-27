@@ -1,7 +1,11 @@
+
 use dotenv::dotenv;
+
 use std::{env, io};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use rand::Rng;
 use bytes::{Bytes};
 
 use rusoto_core::{Region, RusotoError};
@@ -157,7 +161,7 @@ struct OnetimeFile {
 
 #[async_trait]
 trait FilesStorage {
-    async fn add_file (&self, file: OnetimeFile) -> Result<bool, Error>;
+    async fn add_file (&self, filename: String, contents: Bytes) -> Result<bool, Error>;
     async fn list_files (&self) -> Result<Vec<OnetimeFile>, Error>;
     async fn get_file (&self, filename: String) -> Result<Option<OnetimeFile>, Error>;
 }
@@ -173,7 +177,7 @@ struct OnetimeLink {
 
 #[async_trait]
 trait LinksStorage {
-    async fn add_link (&self, link: OnetimeLink) -> Result<bool, Error>;
+    async fn add_link (&self, link: String, filename: String) -> Result<bool, Error>;
     async fn list_links (&self) -> Result<Vec<OnetimeLink>, Error>;
     async fn get_link (&self, link: String, ip: String) -> Result<Option<OnetimeLink>, Error>;
 }
@@ -200,8 +204,15 @@ impl DynamodbStorage {
 
 //#[async_trait]
 impl DynamodbStorage {//FilesStorage for
-    async fn add_file (&self, file: OnetimeFile) -> Result<bool, Error> {
+    async fn add_file (&self, filename: String, contents: Bytes) -> Result<bool, Error> {
         let now = self.time_provider.unix_ts_ms();
+
+        let row = OnetimeFile {
+            filename: filename,
+            contents: contents,
+            created_at: now,
+            updated_at: now,
+        };
 
         Ok(false)
     }
@@ -236,8 +247,16 @@ impl DynamodbStorage {//FilesStorage for
 
 //#[async_trait]
 impl DynamodbStorage {//LinksStorage for
-    async fn add_link (&self, link: OnetimeLink) -> Result<bool, Error> {
+    async fn add_link (&self, link: String, filename: String) -> Result<bool, Error> {
         let now = self.time_provider.unix_ts_ms();
+
+        let row = OnetimeLink {
+            filename: filename,
+            link: link,
+            created_at: now,
+            downloaded_at: None,
+            ip: None,
+        };
 
         Ok(false)
     }
@@ -352,9 +371,9 @@ async fn add_file (
     println!("add file");
     check_api_key(&req, service.config.api_key_files.as_str())?;
     check_rate_limit(&req)?;
-    let now = service.time_provider.unix_ts_ms();
 
-    let mut string_values = HashMap::new();
+    let mut filename: Option<String> = None;
+    let mut contents: Option<Bytes> = None;
 
     while let Ok(Some(field)) = payload.try_next().await {
         let content_disposition = field.content_disposition().unwrap();
@@ -363,26 +382,28 @@ async fn add_file (
         match content_disposition.get_filename() {
             Some(filename) => {
                 println!("'{}' filename '{}'", field_name, filename);
-                let val = collect_chunks(field, service.config.max_len_file).await?;
-                println!("file:\n{:?}", val);
+                if field_name == "file" {
+                    let val = collect_chunks(field, service.config.max_len_file).await?;
+                    println!("file:\n{:?}", val);
+                    // TODO: make sure there is anctually a value here
+                    contents = Some(Bytes::from(val));
+                }
             }
             None => {
                 println!("'{}' not a file!", field_name);
-                let val = collect_chunks(field, service.config.max_len_value).await?;
-                string_values.insert(field_name, String::from_utf8(val).unwrap());
+                if field_name == "filename" {
+                    let val = collect_chunks(field, service.config.max_len_value).await?;
+                    // TODO: make sure there is anctually a value here
+                    filename = Some(String::from_utf8(val).unwrap());
+                }
             }
         }
     }
 
-    // TODO: add to storage
-    service.storage_files.add_file(OnetimeFile {
-        filename: String::from("file.zip"),
-        contents: Bytes::from(&b"Hello world"[..]),
-        created_at: now,
-        updated_at: now,
-    }).await;
+    if filename.is_some() && contents.is_some() {
+        service.storage_files.add_file(filename.unwrap(), contents.unwrap()).await;
+    }
 
-    //println!("field filename {:?}", string_values.get("filename").unwrap());
     Ok(HttpResponse::Ok().body("added file"))
 }
 
@@ -394,25 +415,52 @@ async fn add_link (
     println!("add link");
     check_api_key(&req, service.config.api_key_links.as_str())?;
     check_rate_limit(&req)?;
-    let now = service.time_provider.unix_ts_ms();
 
-    // TODO: parse request to get filename
-    // TODO: validate that filename is a valid file!
-    // TODO: generate random link (uniqueness is a race condition, don't bother)
+    let mut filename: Option<String> = None;
 
-    // TODO: add to storage
-    service.storage_links.add_link(OnetimeLink {
-        filename: String::from("file.zip"),
-        link: String::from("abc123"),
-        created_at: now,
-        downloaded_at: None,
-        ip: None,
-    }).await;
+    while let Ok(Some(field)) = payload.try_next().await {
+        let content_disposition = field.content_disposition().unwrap();
+        let field_name = content_disposition.get_name().unwrap().to_owned();
+
+        match content_disposition.get_filename() {
+            Some(filename) => {
+                println!("'{}' filename '{}'", field_name, filename);
+            }
+            None => {
+                println!("'{}' not a file!", field_name);
+                if field_name == "filename" {
+                    let val = collect_chunks(field, service.config.max_len_value).await?;
+                    // TODO: make sure there is anctually a value here
+                    filename = Some(String::from_utf8(val).unwrap());
+                }
+            }
+        }
+    }
+
+    if filename.is_some() {
+        // TODO validate filename is stored file
+        if true {
+            // https://rust-lang-nursery.github.io/rust-cookbook/algorithms/randomness.html
+            let now = service.time_provider.unix_ts_ms();
+            let n: u64 = rand::thread_rng().gen();
+
+            let link = format!("{:016x}{:016x}", now, n);
+            println!("link {}", link);
+            let url = format!("/download/{}", link);
+
+            service.storage_links.add_link(link, filename.unwrap()).await;
+
+            // https://actix.rs/docs/response/
+            return Ok(HttpResponse::Ok()
+                .content_type("text/plain")
+                .body(url));
+        }
+    }
 
     // https://actix.rs/docs/response/
     Ok(HttpResponse::Ok()
         .content_type("text/plain")
-        .body("https://www.google.com/"))
+        .body("TODO: need to catch what failed above and fail response properly"))
 }
 
 async fn download_link (
@@ -429,12 +477,12 @@ async fn download_link (
 
     // TODO: find file from links, find contents from file
     let filename = service.storage_links.get_link(link, ip).await.unwrap().unwrap().filename;
-    let b = service.storage_files.get_file(filename).await.unwrap().unwrap().contents;
+    let contents = service.storage_files.get_file(filename).await.unwrap().unwrap().contents;
 
     // https://github.com/actix/examples/blob/master/basics/src/main.rs
     HttpResponse::Ok()
         .content_type("application/octet-stream")
-        .body(b)
+        .body(contents)
 }
 
 fn build_service () -> OnetimeDownloaderService {
