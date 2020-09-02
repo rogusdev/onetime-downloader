@@ -10,16 +10,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rand::Rng;
 use bytes::{Bytes};
 
-use rusoto_core::{Region, RusotoError};
+use rusoto_core::{Region};
 use rusoto_dynamodb::{DynamoDb, DynamoDbClient, AttributeValue, GetItemInput, PutItemInput, ListTablesInput};
 
 // https://actix.rs/
 // very fast framework: https://www.techempower.com/benchmarks/#section=data-r19
-use actix_web::{web, App, Error, HttpRequest, HttpResponse, HttpServer};
+use actix_web::{web, App, Error as ActixError, HttpRequest, HttpResponse, HttpServer};
 use actix_multipart::{Field, Multipart};
 use futures::{StreamExt, TryStreamExt}; // adds... something for multipart processsing
 
-use async_trait::async_trait;
+//use async_trait::async_trait;
 
 
 /*
@@ -170,7 +170,7 @@ struct OnetimeLink {
     ip_address: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct DynamodbStorage {
     time_provider: SystemTimeProvider,
     files_table: String,
@@ -189,7 +189,7 @@ fn ddb_val_s (val: String) -> AttributeValue {
     ddb_val_os(Some(val))
 }
 
-fn ddb_val_on (val: Option<u64>) -> AttributeValue {
+fn ddb_val_on (val: Option<String>) -> AttributeValue {
     AttributeValue {
         n: val,
         ..Default::default()
@@ -200,6 +200,17 @@ fn ddb_val_n (val: u64) -> AttributeValue {
     ddb_val_on(Some(val.to_string()))
 }
 
+fn ddb_val_ob (val: Option<Bytes>) -> AttributeValue {
+    AttributeValue {
+        b: val,
+        ..Default::default()
+    }
+}
+
+fn ddb_val_b (val: Bytes) -> AttributeValue {
+    ddb_val_ob(Some(val))
+}
+
 fn ddb_key_s (key: String, val: String) -> HashMap<String, AttributeValue> {
     hashmap! {
         key => ddb_val_s(val)
@@ -207,6 +218,26 @@ fn ddb_key_s (key: String, val: String) -> HashMap<String, AttributeValue> {
 
     // let mut item = HashMap::new();
     // item.insert(key, ddb_val_s(val));
+}
+
+fn ddb_attr_s (attributes: &HashMap<String, AttributeValue>, field: &String) -> Result<String, String> {
+    // clone because get returns Option<&V> (not Option<V>)
+    //  and thus without clone, this attempts a move out of that (that fails to compile)
+    //  https://doc.rust-lang.org/beta/std/collections/struct.HashMap.html#method.get
+    attributes.get(field).ok_or(format!("Missing field {}", field))?.clone()
+        .s.ok_or(format!("Empty field {}", field))
+}
+
+fn ddb_attr_b (attributes: &HashMap<String, AttributeValue>, field: &String) -> Result<Bytes, String> {
+    attributes.get(field).ok_or(format!("Missing field {}", field))?.clone()
+        .b.ok_or(format!("Empty field {}", field))
+        .map(|s| Bytes::from(s))
+}
+
+fn ddb_attr_n (attributes: &HashMap<String, AttributeValue>, field: &String) -> Result<u64, String> {
+    attributes.get(field).ok_or(format!("Missing field {}", field))?.clone()
+        .n.ok_or(format!("Empty field {}", field))?
+        .parse::<u64>().map_err(|why| format!("Field {} is not a number {}", field, why))
 }
 
 impl DynamodbStorage {
@@ -222,21 +253,49 @@ impl DynamodbStorage {
             client: DynamoDbClient::new(Region::UsEast1),
         }
     }
+}
 
-    const FIELD_FILENAME: String = "Filename".to_string();
-    const FIELD_CONTENTS: String = "Contents".to_string();
-    const FIELD_CREATED_AT: String = "CreatedAt".to_string();
-    const FIELD_UPDATED_AT: String = "UpdatedAt".to_string();
+// #[async_trait]
+// trait OnetimeStorage {
+//     async fn add_file (&self, filename: String, contents: Bytes) -> Result<bool, String>;
+//     async fn list_files (&self) -> Result<Vec<OnetimeFile>, String>;
+//     async fn get_file (&self, filename: String) -> Result<OnetimeFile, String>;
+//     async fn add_link (&self, link: String, filename: String) -> Result<bool, String>;
+//     async fn list_links (&self) -> Result<Vec<OnetimeLink>, String>;
+//     async fn get_link (&self, token: String, ip: String) -> Result<OnetimeLink, String>;
+// }
+
+impl DynamodbStorage {//for OnetimeStorage
+    const FIELD_FILENAME: &'static str = "Filename";
+    const FIELD_CONTENTS: &'static str = "Contents";
+    const FIELD_CREATED_AT: &'static str = "CreatedAt";
+    const FIELD_UPDATED_AT: &'static str = "UpdatedAt";
 
     fn filename_key (&self, filename: String) -> HashMap<String, AttributeValue> {
-        ddb_key_s(Self::FIELD_FILENAME, filename)
+        ddb_key_s(Self::FIELD_FILENAME.to_string(), filename)
     }
 
-    async fn add_file (&self, file: OnetimeFile) -> Result<bool, Error> {
-        Ok(false)
+    async fn add_file (&self, file: OnetimeFile) -> Result<bool, String> {
+        let item = hashmap! {
+            Self::FIELD_FILENAME.to_string() => ddb_val_s(file.filename),
+            Self::FIELD_CONTENTS.to_string() => ddb_val_b(file.contents),
+            Self::FIELD_CREATED_AT.to_string() => ddb_val_n(file.created_at),
+            Self::FIELD_UPDATED_AT.to_string() => ddb_val_n(file.updated_at),
+        };
+
+        let request = PutItemInput {
+            item: item,
+            table_name: self.files_table.clone(),
+            ..Default::default()
+        };
+
+        match self.client.put_item(request).await {//.map(|output| true)
+            Err(why) => Err(why.to_string()),
+            Ok(output) => Ok(true)
+        }
     }
 
-    async fn list_files (&self) -> Result<Vec<OnetimeFile>, Error>  {
+    async fn list_files (&self) -> Result<Vec<OnetimeFile>, String>  {
         // https://docs.rs/rusoto_dynamodb/0.44.0/rusoto_dynamodb/
         let request = ListTablesInput::default();
         // https://rusoto.github.io/rusoto/rusoto_dynamodb/struct.ListTablesOutput.html
@@ -254,45 +313,71 @@ impl DynamodbStorage {
         Ok(vec)
     }
 
-    async fn get_file (&self, filename: String) -> Result<Option<OnetimeFile>, Error>  {
-        Ok(Some(OnetimeFile {
+    fn build_file (
+        &self,
+        attributes: HashMap<String, AttributeValue>,
+    ) -> Result<OnetimeFile, String> {
+        let filename = ddb_attr_s(&attributes, &Self::FIELD_FILENAME.to_string())?;
+        let contents = ddb_attr_b(&attributes, &Self::FIELD_CONTENTS.to_string())?;
+        let created_at = ddb_attr_n(&attributes, &Self::FIELD_CREATED_AT.to_string())?;
+        let updated_at = ddb_attr_n(&attributes, &Self::FIELD_UPDATED_AT.to_string())?;
+
+        Ok(OnetimeFile {
             filename: filename,
-            contents: Bytes::from(&b"Hello world"[..]),
-            created_at: 123,
-            updated_at: 456,
-        }))
+            contents: contents,
+            created_at: created_at,
+            updated_at: updated_at,
+        })
     }
 
-    const FIELD_TOKEN: String = "Token".to_string();
-    const FIELD_DOWNLOADED_AT: String = "DownloadedAt".to_string();
-    const FIELD_IP_ADDRESS: String = "IpAddress".to_string();
+    async fn get_file (&self, filename: String) -> Result<OnetimeFile, String>  {
+        // https://www.rusoto.org/futures.html has example uses
+        // ... maybe use https://docs.rs/crate/serde_dynamodb/0.6.0 ?
+        let request = GetItemInput {
+            key: self.filename_key(filename),
+            table_name: self.files_table.clone(),
+            ..Default::default()
+        };
+
+        match self.client.get_item(request).await {
+            Err(why) => Err(why.to_string()),
+            Ok(output) => match output.item {
+                None => Err("File not found".to_string()),
+                Some(attributes) => self.build_file(attributes),
+            }
+        }
+    }
+
+    const FIELD_TOKEN: &'static str = "Token";
+    const FIELD_DOWNLOADED_AT: &'static str = "DownloadedAt";
+    const FIELD_IP_ADDRESS: &'static str = "IpAddress";
 
     fn token_key (&self, token: String) -> HashMap<String, AttributeValue> {
-        ddb_key_s(Self::FIELD_TOKEN, token)
+        ddb_key_s(Self::FIELD_TOKEN.to_string(), token)
     }
 
-    async fn add_link (&self, link: OnetimeLink) -> Result<bool, Error> {
+    async fn add_link (&self, link: OnetimeLink) -> Result<bool, String> {
         let item = hashmap! {
-            Self::FIELD_TOKEN => ddb_val_s(link.token),
-            Self::FIELD_FILENAME => ddb_val_s(link.filename),
-            Self::FIELD_CREATED_AT => ddb_val_n(link.created_at),
-            Self::FIELD_DOWNLOADED_AT => ddb_val_on(link.downloaded_at),
-            Self::FIELD_IP_ADDRESS => ddb_val_os(link.ip_address),
+            Self::FIELD_TOKEN.to_string() => ddb_val_s(link.token),
+            Self::FIELD_FILENAME.to_string() => ddb_val_s(link.filename),
+            Self::FIELD_CREATED_AT.to_string() => ddb_val_n(link.created_at),
+            Self::FIELD_DOWNLOADED_AT.to_string() => ddb_val_on(link.downloaded_at.map(|v| v.to_string())),
+            Self::FIELD_IP_ADDRESS.to_string() => ddb_val_os(link.ip_address),
         };
 
         let request = PutItemInput {
             item: item,
-            table_name: self.links_table,
+            table_name: self.links_table.clone(),
             ..Default::default()
         };
 
-        match self.client.put_item(request).await {
-            Err(why) => Err(why.into()),
+        match self.client.put_item(request).await {//.map(|output| true)
+            Err(why) => Err(why.to_string()),
             Ok(output) => Ok(true)
         }
     }
 
-    async fn list_links (&self) -> Result<Vec<OnetimeLink>, Error> {
+    async fn list_links (&self) -> Result<Vec<OnetimeLink>, String> {
         let request = ListTablesInput::default();
         // https://rusoto.github.io/rusoto/rusoto_dynamodb/struct.ListTablesOutput.html
         let response = self.client.list_tables(request).await;
@@ -310,36 +395,52 @@ impl DynamodbStorage {
         Ok(vec)
     }
 
-    async fn get_link (&self, token: String, ip_address: String) -> Result<Option<OnetimeLink>, Error> {
+    fn build_link (
+        &self,
+        attributes: HashMap<String, AttributeValue>,
+        ip_address: String,
+    ) -> Result<OnetimeLink, String> {
+        let token = ddb_attr_s(&attributes, &Self::FIELD_TOKEN.to_string())?;
+        let filename = ddb_attr_s(&attributes, &Self::FIELD_FILENAME.to_string())?;
+        let created_at = ddb_attr_n(&attributes, &Self::FIELD_CREATED_AT.to_string())?;
+        // let downloaded_at = ddb_attr_on(attributes, &Self::FIELD_UPDATED_AT.to_string())?;
+        // let ip_address = ddb_attr_os(attributes, &Self::FIELD_FILENAME.to_string())?;
+
         let now = self.time_provider.unix_ts_ms();
 
+        Ok(OnetimeLink {
+            token: token,
+            filename: filename,
+            created_at: created_at,
+            downloaded_at: Some(now),
+            ip_address: Some(ip_address),
+        })
+    }
+
+    async fn get_link (
+        &self,
+        token: String,
+        ip_address: String,
+    ) -> Result<OnetimeLink, String> {
         // https://www.rusoto.org/futures.html has example uses
         // ... maybe use https://docs.rs/crate/serde_dynamodb/0.6.0 ?
         let request = GetItemInput {
-            key: self.token_key(token.clone()),
-            table_name: self.links_table,
+            key: self.token_key(token),
+            table_name: self.links_table.clone(),
             ..Default::default()
         };
 
         match self.client.get_item(request).await {
-            Err(why) => Err(why.into()),
+            Err(why) => Err(why.to_string()),
             Ok(output) => match output.item {
-                None => Err("Link not found".into()),
-                Some(attributes) => {
-                    Ok(Some(OnetimeLink {
-                        token: attributes.get(&Self::FIELD_TOKEN).unwrap().s.unwrap(),
-                        filename: attributes.get(&Self::FIELD_FILENAME).unwrap().s.unwrap(),
-                        created_at: attributes.get(&Self::FIELD_CREATED_AT).unwrap().n.unwrap().parse::<u64>().unwrap(),
-                        downloaded_at: Some(now),
-                        ip_address: Some(ip_address.to_string()),
-                    }))
-                }
+                None => Err("Link not found".to_string()),
+                Some(attributes) => self.build_link(attributes, ip_address),
             }
         }
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct OnetimeDownloaderService {
     time_provider: SystemTimeProvider,
     config: OnetimeDownloaderConfig,
@@ -375,7 +476,7 @@ fn check_rate_limit (req: &HttpRequest) -> Result<bool, HttpResponse> {
 async fn list_files (
     req: HttpRequest,
     service: web::Data<OnetimeDownloaderService>,
-) -> Result<HttpResponse, Error> {
+) -> Result<HttpResponse, ActixError> {
     println!("list files");
 
     service.storage.list_files().await;
@@ -386,7 +487,7 @@ async fn list_files (
 async fn list_links (
     req: HttpRequest,
     service: web::Data<OnetimeDownloaderService>,
-) -> Result<HttpResponse, Error> {
+) -> Result<HttpResponse, ActixError> {
     println!("list links");
 
     service.storage.list_links().await;
@@ -412,7 +513,7 @@ async fn add_file (
     req: HttpRequest,
     mut payload: Multipart,
     service: web::Data<OnetimeDownloaderService>,
-) -> Result<HttpResponse, Error> {
+) -> Result<HttpResponse, ActixError> {
     println!("add file");
     check_api_key(&req, service.config.api_key_files.as_str())?;
     check_rate_limit(&req)?;
@@ -430,7 +531,6 @@ async fn add_file (
                 if field_name == "file" {
                     let val = collect_chunks(field, service.config.max_len_file).await?;
                     println!("file:\n{:?}", val);
-                    // TODO: make sure there is anctually a value here
                     contents = Some(Bytes::from(val));
                 }
             }
@@ -438,7 +538,6 @@ async fn add_file (
                 println!("'{}' not a file!", field_name);
                 if field_name == "filename" {
                     let val = collect_chunks(field, service.config.max_len_value).await?;
-                    // TODO: make sure there is anctually a value here
                     filename = Some(String::from_utf8(val).unwrap());
                 }
             }
@@ -465,7 +564,7 @@ async fn add_link (
     req: HttpRequest,
     mut payload: Multipart,
     service: web::Data<OnetimeDownloaderService>,
-) -> Result<HttpResponse, Error> {
+) -> Result<HttpResponse, HttpResponse> {
     println!("add link");
     check_api_key(&req, service.config.api_key_links.as_str())?;
     check_rate_limit(&req)?;
@@ -484,7 +583,6 @@ async fn add_link (
                 println!("'{}' not a file!", field_name);
                 if field_name == "filename" {
                     let val = collect_chunks(field, service.config.max_len_value).await?;
-                    // TODO: make sure there is anctually a value here
                     filename = Some(String::from_utf8(val).unwrap());
                 }
             }
@@ -494,8 +592,8 @@ async fn add_link (
     if filename.is_some() {
         // TODO validate filename is stored file
         if true {
-            // https://rust-lang-nursery.github.io/rust-cookbook/algorithms/randomness.html
             let now = service.time_provider.unix_ts_ms();
+            // https://rust-lang-nursery.github.io/rust-cookbook/algorithms/randomness.html
             let n: u64 = rand::thread_rng().gen();
 
             let token = format!("{:016x}{:016x}", now, n);
@@ -513,16 +611,15 @@ async fn add_link (
             service.storage.add_link(link).await;
 
             // https://actix.rs/docs/response/
-            return Ok(HttpResponse::Ok()
-                .content_type("text/plain")
-                .body(url));
+            return Ok(
+                HttpResponse::Ok()
+                    .content_type("text/plain")
+                    .body(url)
+            );
         }
     }
 
-    // https://actix.rs/docs/response/
-    Ok(HttpResponse::Ok()
-        .content_type("text/plain")
-        .body("TODO: need to catch what failed above and fail response properly"))
+    Err(HttpResponse::BadRequest().body("Must provide filename for file"))
 }
 
 async fn download_link (
@@ -533,13 +630,26 @@ async fn download_link (
     if let Err(badreq) = check_rate_limit(&req) {
         return badreq
     }
-    let link = req.match_info().get("link").unwrap().to_string();
-    let ip = req.connection_info().remote().unwrap().to_string();
-    println!("downloading... {} by {}", link, ip);
 
-    // TODO: find file from links, find contents from file
-    let filename = service.storage.get_link(link, ip).await.unwrap().unwrap().filename;
-    let contents = service.storage.get_file(filename).await.unwrap().unwrap().contents;
+    let token = req.match_info().get("token").unwrap().to_string();
+    let ip = req.connection_info().remote().unwrap().to_string();
+    println!("downloading... {} by {}", token, ip);
+
+    let not_found_file = format!("Could not find file for link {}", token);
+    let filename = match service.storage.get_link(token, ip).await {
+        Ok(link) => link.filename,
+        Err(why) => return HttpResponse::NotFound().body(
+            format!("{}: {}",  not_found_file, why)
+        )
+    };
+
+    let not_found_contents = format!("Could not find contents for filename {}", filename);
+    let contents = match service.storage.get_file(filename).await {
+        Ok(file) => file.contents,
+        Err(why) => return HttpResponse::NotFound().body(
+            format!("{}: {}", not_found_contents, why)
+        )
+    };
 
     // https://github.com/actix/examples/blob/master/basics/src/main.rs
     HttpResponse::Ok()
@@ -555,7 +665,6 @@ fn build_service () -> OnetimeDownloaderService {
 
     // TODO: what I want is to have a single instance get passed as traits (interfaces) that can be swapped out by config
     let storage = DynamodbStorage::from_env(SystemTimeProvider {});
-    println!("storage {:?}", storage);
 
     OnetimeDownloaderService {
         time_provider: time_provider,
@@ -578,7 +687,7 @@ async fn main () -> io::Result<()> {
                     .route("links", web::get().to(list_links))
                     .route("files", web::post().to(add_file))
                     .route("links", web::post().to(add_link))
-                    .route("download/{link}", web::get().to(download_link)),
+                    .route("download/{token}", web::get().to(download_link)),
             )
     })
     .bind("127.0.0.1:8080")?
