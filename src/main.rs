@@ -1,4 +1,13 @@
 
+/*
+
+TODO:
+- return json lists of files/links w details -- ddb scan w projectionexpression
+- mark links as downloaded once they have been hit -- do it in a synchronous / consistent manner to guarantee no double download
+- separate structs/etc into mod files/folders
+
+*/
+
 use dotenv::dotenv;
 
 use maplit::hashmap;
@@ -20,6 +29,25 @@ use actix_multipart::{Field, Multipart};
 use futures::{StreamExt, TryStreamExt}; // adds... something for multipart processsing
 
 //use async_trait::async_trait;
+
+
+
+// postgres mapping: https://github.com/Dowwie/tokio-postgres-mapper
+// actix example using postgres: https://github.com/actix/examples/tree/master/async_pg
+
+// consider mongo support: https://lib.rs/crates/mongodb
+
+// http client: https://crates.io/crates/reqwest
+
+// toki vs async-std ...vs smol? https://github.com/stjepang/smol
+// https://www.reddit.com/r/rust/comments/dngig6/tokio_vs_asyncstd/
+
+// maybe use warp instead of actix-web? https://github.com/seanmonstar/warp
+// or gotham which leverages hyper, same as wrap: https://gotham.rs/
+
+// rdkafka for publishing that way: https://lib.rs/crates/rdkafka
+
+// json: https://github.com/serde-rs/json -- note json syntax for creating objects
 
 
 /*
@@ -108,16 +136,16 @@ impl SystemTimeProvider {//TimeProvider for
     }
 }
 
-#[derive(Debug, Clone)]
-struct FixedTimeProvider {
-    fixed_unix_ts_ms: u64,
-}
+// #[derive(Debug, Clone)]
+// struct FixedTimeProvider {
+//     fixed_unix_ts_ms: u64,
+// }
 
-impl FixedTimeProvider {//TimeProvider for
-    fn unix_ts_ms (&self) -> u64 {
-        self.fixed_unix_ts_ms
-    }
-}
+// impl FixedTimeProvider {//TimeProvider for
+//     fn unix_ts_ms (&self) -> u64 {
+//         self.fixed_unix_ts_ms
+//     }
+// }
 
 #[derive(Debug, Clone)]
 struct OnetimeDownloaderConfig {
@@ -178,37 +206,25 @@ struct DynamodbStorage {
     client: DynamoDbClient,
 }
 
-fn ddb_val_os (val: Option<String>) -> AttributeValue {
-    AttributeValue {
-        s: val,
-        ..Default::default()
-    }
-}
-
 fn ddb_val_s (val: String) -> AttributeValue {
-    ddb_val_os(Some(val))
-}
-
-fn ddb_val_on (val: Option<String>) -> AttributeValue {
     AttributeValue {
-        n: val,
+        s: Some(val),
         ..Default::default()
     }
 }
 
 fn ddb_val_n (val: u64) -> AttributeValue {
-    ddb_val_on(Some(val.to_string()))
-}
-
-fn ddb_val_ob (val: Option<Bytes>) -> AttributeValue {
     AttributeValue {
-        b: val,
+        n: Some(val.to_string()),
         ..Default::default()
     }
 }
 
 fn ddb_val_b (val: Bytes) -> AttributeValue {
-    ddb_val_ob(Some(val))
+    AttributeValue {
+        b: Some(val),
+        ..Default::default()
+    }
 }
 
 fn ddb_key_s (key: String, val: String) -> HashMap<String, AttributeValue> {
@@ -241,8 +257,8 @@ fn ddb_attr_n (attributes: &HashMap<String, AttributeValue>, field: &String) -> 
 }
 
 impl DynamodbStorage {
-    const DEFAULT_TABLE_FILES: &'static str = "Ontetime.Files";
-    const DEFAULT_TABLE_LINKS: &'static str = "Ontetime.Links";
+    const DEFAULT_TABLE_FILES: &'static str = "Onetime.Files";
+    const DEFAULT_TABLE_LINKS: &'static str = "Onetime.Links";
 
     fn from_env (time_provider: SystemTimeProvider) -> DynamodbStorage {
         DynamodbStorage {
@@ -290,8 +306,8 @@ impl DynamodbStorage {//for OnetimeStorage
         };
 
         match self.client.put_item(request).await {//.map(|output| true)
-            Err(why) => Err(why.to_string()),
-            Ok(output) => Ok(true)
+            Err(why) => Err(format!("Add file failed: {}", why.to_string())),
+            Ok(_) => Ok(true)
         }
     }
 
@@ -340,7 +356,7 @@ impl DynamodbStorage {//for OnetimeStorage
         };
 
         match self.client.get_item(request).await {
-            Err(why) => Err(why.to_string()),
+            Err(why) => Err(format!("Get file failed: {}", why.to_string())),
             Ok(output) => match output.item {
                 None => Err("File not found".to_string()),
                 Some(attributes) => self.build_file(attributes),
@@ -357,23 +373,29 @@ impl DynamodbStorage {//for OnetimeStorage
     }
 
     async fn add_link (&self, link: OnetimeLink) -> Result<bool, String> {
-        let item = hashmap! {
+        let mut item = hashmap! {
             Self::FIELD_TOKEN.to_string() => ddb_val_s(link.token),
             Self::FIELD_FILENAME.to_string() => ddb_val_s(link.filename),
             Self::FIELD_CREATED_AT.to_string() => ddb_val_n(link.created_at),
-            Self::FIELD_DOWNLOADED_AT.to_string() => ddb_val_on(link.downloaded_at.map(|v| v.to_string())),
-            Self::FIELD_IP_ADDRESS.to_string() => ddb_val_os(link.ip_address),
         };
+        if let Some(downloaded_at) = link.downloaded_at {
+            item.insert(Self::FIELD_DOWNLOADED_AT.to_string(), ddb_val_n(downloaded_at));
+        }
+        if let Some(ip_address) = link.ip_address {
+            item.insert(Self::FIELD_IP_ADDRESS.to_string(), ddb_val_s(ip_address));
+        }
+        // print!("add link item {:?}", item);
 
         let request = PutItemInput {
             item: item,
             table_name: self.links_table.clone(),
             ..Default::default()
         };
+        // print!("add link request {:?}", request);
 
         match self.client.put_item(request).await {//.map(|output| true)
-            Err(why) => Err(why.to_string()),
-            Ok(output) => Ok(true)
+            Err(why) => Err(format!("Add link failed: {}", why.to_string())),
+            Ok(_) => Ok(true)
         }
     }
 
@@ -431,7 +453,7 @@ impl DynamodbStorage {//for OnetimeStorage
         };
 
         match self.client.get_item(request).await {
-            Err(why) => Err(why.to_string()),
+            Err(why) => Err(format!("Get link failed: {}", why.to_string())),
             Ok(output) => match output.item {
                 None => Err("Link not found".to_string()),
                 Some(attributes) => self.build_link(attributes, ip_address),
@@ -455,10 +477,11 @@ fn check_api_key (req: &HttpRequest, api_key: &str) -> Result<bool, HttpResponse
         Some(v) => v == api_key,
         _ => false
     };
-    if !valid_api_key {
-        return Err(HttpResponse::Unauthorized().body("Invalid or missing api key!"))
+    if valid_api_key {
+        Ok(true)
+    } else {
+        Err(HttpResponse::Unauthorized().body("Invalid or missing api key!"))
     }
-    Ok(true)
 }
 
 fn check_rate_limit (req: &HttpRequest) -> Result<bool, HttpResponse> {
@@ -476,23 +499,27 @@ fn check_rate_limit (req: &HttpRequest) -> Result<bool, HttpResponse> {
 async fn list_files (
     req: HttpRequest,
     service: web::Data<OnetimeDownloaderService>,
-) -> Result<HttpResponse, ActixError> {
+) -> Result<HttpResponse, HttpResponse> {
     println!("list files");
+    check_api_key(&req, service.config.api_key_files.as_str())?;
 
-    service.storage.list_files().await;
-
-    Ok(HttpResponse::Ok().body("list files!"))
+    match service.storage.list_files().await {
+        Ok(_) => Ok(HttpResponse::Ok().body("list files!")),
+        Err(why) => Err(HttpResponse::InternalServerError().body(format!("Something went wrong! {}", why))),
+    }
 }
 
 async fn list_links (
     req: HttpRequest,
     service: web::Data<OnetimeDownloaderService>,
-) -> Result<HttpResponse, ActixError> {
+) -> Result<HttpResponse, HttpResponse> {
     println!("list links");
+    check_api_key(&req, service.config.api_key_links.as_str())?;
 
-    service.storage.list_links().await;
-
-    Ok(HttpResponse::Ok().body("list links!"))
+    match service.storage.list_links().await {
+        Ok(_) => Ok(HttpResponse::Ok().body("list links!")),
+        Err(why) => Err(HttpResponse::InternalServerError().body(format!("Something went wrong! {}", why))),
+    }
 }
 
 async fn collect_chunks (mut field: Field, max: usize) -> Result<Vec<u8>, HttpResponse> {
@@ -547,17 +574,20 @@ async fn add_file (
     if filename.is_some() && contents.is_some() {
         let now = service.time_provider.unix_ts_ms();
 
-        let onetime_file = OnetimeFile {
+        let file = OnetimeFile {
             filename: filename.unwrap(),
             contents: contents.unwrap(),
             created_at: now,
             updated_at: now,
         };
 
-        service.storage.add_file(onetime_file).await;
+        match service.storage.add_file(file).await {
+            Ok(_) => Ok(HttpResponse::Ok().body("added file")),
+            Err(why) => Ok(HttpResponse::InternalServerError().body(format!("Something went wrong! {}", why))),
+        }
+    } else {
+        Ok(HttpResponse::BadRequest().body("No filename or file contents provided!"))
     }
-
-    Ok(HttpResponse::Ok().body("added file"))
 }
 
 async fn add_link (
@@ -608,18 +638,20 @@ async fn add_link (
                 ip_address: None,
             };
 
-            service.storage.add_link(link).await;
-
-            // https://actix.rs/docs/response/
-            return Ok(
-                HttpResponse::Ok()
-                    .content_type("text/plain")
-                    .body(url)
-            );
+            match service.storage.add_link(link).await {
+                Ok(_) => Ok(
+                    HttpResponse::Ok()
+                        .content_type("text/plain")
+                        .body(url)
+                ),
+                Err(why) => Err(HttpResponse::InternalServerError().body(format!("Something went wrong! {}", why))),
+            }
+        } else {
+            Err(HttpResponse::BadRequest().body("Invalid filename for link!"))
         }
+    } else {
+        Err(HttpResponse::BadRequest().body("Must provide filename for file"))
     }
-
-    Err(HttpResponse::BadRequest().body("Must provide filename for file"))
 }
 
 async fn download_link (
@@ -681,13 +713,19 @@ async fn main () -> io::Result<()> {
     HttpServer::new(|| {
         App::new()
             .data(build_service())
+            // https://actix.rs/docs/application/
             .service(
                 web::scope("/api")
                     .route("files", web::get().to(list_files))
                     .route("links", web::get().to(list_links))
                     .route("files", web::post().to(add_file))
                     .route("links", web::post().to(add_link))
-                    .route("download/{token}", web::get().to(download_link)),
+            )
+            .route("download/{token}", web::get().to(download_link))
+            // https://github.com/actix/actix-website/blob/master/content/docs/url-dispatch.md
+            .default_service(
+                // https://docs.rs/actix-web/2.0.0/actix_web/struct.App.html#method.service
+                web::route().to(|| HttpResponse::NotFound().body("404 DNE"))
             )
     })
     .bind("127.0.0.1:8080")?
