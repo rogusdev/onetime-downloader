@@ -7,7 +7,7 @@ Generate onetime download links for files stored in some kind of (cloud based?) 
 - [x] post endpoint to add available file to storage
 - [x] post endpoint to create/store + return custom (random) url to download one of those files with tracking of use
 - [x] get endpoint to download file using custom url
-- [ ] updated downloaded_at and prevent future downloads when downloading file
+- [x] updated downloaded_at and prevent future downloads when downloading file
 - [x] get endpoint returns json list of available links for a given filename
 - [ ] separate out modules into files and maybe folders (storage providers)
 - [ ] unit tests for ^

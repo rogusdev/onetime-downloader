@@ -354,7 +354,7 @@ impl DynamodbStorage {//for OnetimeStorage
             ..Default::default()
         };
 
-        match self.client.put_item(request).await {//.map(|output| true)
+        match self.client.put_item(request).await {
             Err(why) => Err(format!("Add file failed: {}", why.to_string())),
             Ok(_) => Ok(true)
         }
@@ -387,7 +387,7 @@ impl DynamodbStorage {//for OnetimeStorage
             ..Default::default()
         };
 
-        match self.client.scan(request).await {//.map(|output| true)
+        match self.client.scan(request).await {
             Err(why) => Err(format!("List files failed: {}", why.to_string())),
             Ok(output) => match output.items {
                 None => Err("No files found".to_string()),
@@ -459,7 +459,7 @@ impl DynamodbStorage {//for OnetimeStorage
         };
         // print!("add link request {:?}", request);
 
-        match self.client.put_item(request).await {//.map(|output| true)
+        match self.client.put_item(request).await {
             Err(why) => Err(format!("Add link failed: {}", why.to_string())),
             Ok(_) => Ok(true)
         }
@@ -499,7 +499,7 @@ impl DynamodbStorage {//for OnetimeStorage
             ..Default::default()
         };
 
-        match self.client.scan(request).await {//.map(|output| true)
+        match self.client.scan(request).await {
             Err(why) => Err(format!("List links failed: {}", why.to_string())),
             Ok(output) => match output.items {
                 None => Err("No links found".to_string()),
@@ -543,6 +543,39 @@ impl DynamodbStorage {//for OnetimeStorage
             Ok(output) => match output.item {
                 None => Err("Link not found".to_string()),
                 Some(attributes) => Self::build_link(attributes),
+            }
+        }
+    }
+
+    async fn mark_downloaded (
+        &self,
+        link: OnetimeLink,
+        ip_address: String,
+        downloaded_at: u64
+    ) -> Result<bool, String> {
+        let item = hashmap! {
+            Self::FIELD_TOKEN.to_string() => ddb_val_s(link.token),
+            Self::FIELD_FILENAME.to_string() => ddb_val_s(link.filename),
+            Self::FIELD_CREATED_AT.to_string() => ddb_val_n(link.created_at),
+            Self::FIELD_DOWNLOADED_AT.to_string() => ddb_val_n(downloaded_at),
+            Self::FIELD_IP_ADDRESS.to_string() => ddb_val_s(ip_address),
+        };
+
+        let request = PutItemInput {
+            item: item,
+            table_name: self.links_table.clone(),
+            return_values: Some("ALL_OLD".to_string()),
+            ..Default::default()
+        };
+
+        match self.client.put_item(request).await {
+            Err(why) => Err(format!("Mark downloaded put failed: {}", why.to_string())),
+            Ok(output) => match output.attributes {
+                None => Ok(false),
+                Some(attributes) => match Self::build_link(attributes) {
+                    Err(why) => Err(format!("Mark downloaded build failed: {}", why.to_string())),
+                    Ok(link) => Ok(link.downloaded_at.is_some()),
+                },
             }
         }
     }
@@ -732,16 +765,25 @@ async fn download_link (
     println!("downloading... {} by {}", token, ip_address);
 
     let not_found_file = format!("Could not find file for link {}", token);
-    let filename = match service.storage.get_link(token).await {
-        Ok(link) => link.filename,
+    let link = match service.storage.get_link(token).await {
+        Ok(link) => link,
         Err(why) => return HttpResponse::NotFound().body(
             format!("{}: {}",  not_found_file, why)
         )
     };
 
-    // TODO: update downloaded_at and ip_address for link to mark it as unavailable for future downloads
-    // make sure that this can return false to confirm that it did not update -- including that it had already been downloaded in a separate thread
-    // ddb: return_values = ALL_OLD
+    if link.downloaded_at.is_some() {
+        return HttpResponse::NotFound().body("Already downloaded");
+    }
+
+    let now = service.time_provider.unix_ts_ms();
+    let filename = link.filename.clone();
+    match service.storage.mark_downloaded(link, ip_address, now).await {
+        Err(why) => return HttpResponse::InternalServerError().body(format!("Something went wrong! {}", why)),
+        Ok(already_downloaded) => if already_downloaded {
+            return HttpResponse::NotFound().body("Already downloaded race");
+        },
+    }
 
     let not_found_contents = format!("Could not find contents for filename {}", filename);
     let contents = match service.storage.get_file(filename).await {
