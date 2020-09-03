@@ -1,13 +1,4 @@
 
-/*
-
-TODO:
-- return json lists of files/links w details -- ddb scan w projectionexpression
-- mark links as downloaded once they have been hit -- do it in a synchronous / consistent manner to guarantee no double download
-- separate structs/etc into mod files/folders
-
-*/
-
 use dotenv::dotenv;
 
 use maplit::hashmap;
@@ -19,8 +10,18 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rand::Rng;
 use bytes::{Bytes};
 
+use serde::{Serialize, Deserialize};
+use serde::ser::{Serializer, SerializeStruct};
+
 use rusoto_core::{Region};
-use rusoto_dynamodb::{DynamoDb, DynamoDbClient, AttributeValue, GetItemInput, PutItemInput, ListTablesInput};
+use rusoto_dynamodb::{
+    DynamoDb,
+    DynamoDbClient,
+    AttributeValue,
+    GetItemInput,
+    PutItemInput,
+    ScanInput
+};
 
 // https://actix.rs/
 // very fast framework: https://www.techempower.com/benchmarks/#section=data-r19
@@ -51,6 +52,11 @@ use futures::{StreamExt, TryStreamExt}; // adds... something for multipart proce
 
 
 /*
+
+aws dynamodb delete-table \
+    --profile rogusdev-chris \
+    --table-name Onetime.Links
+
 
 aws dynamodb create-table \
     --profile rogusdev-chris \
@@ -189,7 +195,23 @@ struct OnetimeFile {
     updated_at: u64,
 }
 
-#[derive(Debug, Clone)]
+// https://serde.rs/impl-serialize.html
+impl Serialize for OnetimeFile {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("OnetimeFile", 4)?;
+        state.serialize_field("filename", &self.filename)?;
+        // only size of contents because we don't want to send entire files back... (and no default serializer for bytes)
+        state.serialize_field("contents_len", &self.contents.len())?;
+        state.serialize_field("created_at", &self.created_at)?;
+        state.serialize_field("updated_at", &self.updated_at)?;
+        state.end()
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct OnetimeLink {
     token: String,
     filename: String,
@@ -197,6 +219,23 @@ struct OnetimeLink {
     downloaded_at: Option<u64>,
     ip_address: Option<String>,
 }
+
+#[derive(Deserialize)]
+struct CreateLink {
+    filename: String,
+}
+
+// #[async_trait]
+// trait OnetimeStorage {
+//     async fn add_file (&self, filename: String, contents: Bytes) -> Result<bool, String>;
+//     async fn list_files (&self) -> Result<Vec<OnetimeFile>, String>;
+//     async fn get_file (&self, filename: String) -> Result<OnetimeFile, String>;
+//     async fn add_link (&self, link: String, filename: String) -> Result<bool, String>;
+//     async fn list_links (&self) -> Result<Vec<OnetimeLink>, String>;
+//     async fn get_link (&self, token: String) -> Result<OnetimeLink, String>;
+// }
+
+// ----------------------------------------------------------------
 
 #[derive(Clone)]
 struct DynamodbStorage {
@@ -244,6 +283,13 @@ fn ddb_attr_s (attributes: &HashMap<String, AttributeValue>, field: &String) -> 
         .s.ok_or(format!("Empty field {}", field))
 }
 
+fn ddb_attr_os (attributes: &HashMap<String, AttributeValue>, field: &String) -> Result<Option<String>, String> {
+    match attributes.get(field) {
+        None => Ok(None),
+        Some(val) => val.s.clone().ok_or(format!("Empty field {}", field)).map(|s| Some(s))
+    }
+}
+
 fn ddb_attr_b (attributes: &HashMap<String, AttributeValue>, field: &String) -> Result<Bytes, String> {
     attributes.get(field).ok_or(format!("Missing field {}", field))?.clone()
         .b.ok_or(format!("Empty field {}", field))
@@ -254,6 +300,19 @@ fn ddb_attr_n (attributes: &HashMap<String, AttributeValue>, field: &String) -> 
     attributes.get(field).ok_or(format!("Missing field {}", field))?.clone()
         .n.ok_or(format!("Empty field {}", field))?
         .parse::<u64>().map_err(|why| format!("Field {} is not a number {}", field, why))
+}
+
+fn ddb_attr_on (attributes: &HashMap<String, AttributeValue>, field: &String) -> Result<Option<u64>, String> {
+    match attributes.get(field) {
+        None => Ok(None),
+        Some(val) => match val.n.clone() {
+            None => Err(format!("Empty field {}", field)),
+            Some(val) => match val.parse::<u64>() {
+                Err(why) => Err(format!("Field {} is not a number {}", field, why)),
+                Ok(val) => Ok(Some(val)),
+            }
+        }
+    }
 }
 
 impl DynamodbStorage {
@@ -270,16 +329,6 @@ impl DynamodbStorage {
         }
     }
 }
-
-// #[async_trait]
-// trait OnetimeStorage {
-//     async fn add_file (&self, filename: String, contents: Bytes) -> Result<bool, String>;
-//     async fn list_files (&self) -> Result<Vec<OnetimeFile>, String>;
-//     async fn get_file (&self, filename: String) -> Result<OnetimeFile, String>;
-//     async fn add_link (&self, link: String, filename: String) -> Result<bool, String>;
-//     async fn list_links (&self) -> Result<Vec<OnetimeLink>, String>;
-//     async fn get_link (&self, token: String, ip: String) -> Result<OnetimeLink, String>;
-// }
 
 impl DynamodbStorage {//for OnetimeStorage
     const FIELD_FILENAME: &'static str = "Filename";
@@ -311,26 +360,43 @@ impl DynamodbStorage {//for OnetimeStorage
         }
     }
 
-    async fn list_files (&self) -> Result<Vec<OnetimeFile>, String>  {
-        // https://docs.rs/rusoto_dynamodb/0.44.0/rusoto_dynamodb/
-        let request = ListTablesInput::default();
-        // https://rusoto.github.io/rusoto/rusoto_dynamodb/struct.ListTablesOutput.html
-        let response = self.client.list_tables(request).await;
-        println!("Tables (files) found: {:?}", response);
-
+    fn collect_files (attributes_vec: Vec<HashMap<String, AttributeValue>>) -> Result<Vec<OnetimeFile>, String>  {
         let mut vec = Vec::new();
-        vec.push(OnetimeFile {
-            filename: String::from("file.zip"),
-            contents: Bytes::from(&b"Hello world"[..]),
-            created_at: 123,
-            updated_at: 456,
-        });
-
+        // https://stackoverflow.com/questions/34733811/what-is-the-difference-between-iter-and-into-iter
+        for attributes in attributes_vec.into_iter() {
+            match Self::build_file(attributes) {
+                Err(why) => return Err(format!("Failed collecting files: {}", why)),
+                Ok(file) => vec.push(file),
+            }
+        }
         Ok(vec)
     }
 
+    async fn list_files (&self) -> Result<Vec<OnetimeFile>, String>  {
+        let projection_expression = [
+            Self::FIELD_FILENAME,
+            Self::FIELD_CONTENTS,
+            Self::FIELD_CREATED_AT,
+            Self::FIELD_UPDATED_AT,
+        ].join(", ");
+
+        // https://docs.rs/rusoto_dynamodb/0.45.0/rusoto_dynamodb/
+        let request = ScanInput {
+            projection_expression: Some(projection_expression),
+            table_name: self.files_table.clone(),
+            ..Default::default()
+        };
+
+        match self.client.scan(request).await {//.map(|output| true)
+            Err(why) => Err(format!("List files failed: {}", why.to_string())),
+            Ok(output) => match output.items {
+                None => Err("No files found".to_string()),
+                Some(attributes_vec) => Self::collect_files(attributes_vec),
+            }
+        }
+    }
+
     fn build_file (
-        &self,
         attributes: HashMap<String, AttributeValue>,
     ) -> Result<OnetimeFile, String> {
         let filename = ddb_attr_s(&attributes, &Self::FIELD_FILENAME.to_string())?;
@@ -359,7 +425,7 @@ impl DynamodbStorage {//for OnetimeStorage
             Err(why) => Err(format!("Get file failed: {}", why.to_string())),
             Ok(output) => match output.item {
                 None => Err("File not found".to_string()),
-                Some(attributes) => self.build_file(attributes),
+                Some(attributes) => Self::build_file(attributes),
             }
         }
     }
@@ -399,50 +465,70 @@ impl DynamodbStorage {//for OnetimeStorage
         }
     }
 
-    async fn list_links (&self) -> Result<Vec<OnetimeLink>, String> {
-        let request = ListTablesInput::default();
-        // https://rusoto.github.io/rusoto/rusoto_dynamodb/struct.ListTablesOutput.html
-        let response = self.client.list_tables(request).await;
-        println!("Tables (links) found: {:?}", response);
-
+    fn collect_links (attributes_vec: Vec<HashMap<String, AttributeValue>>) -> Result<Vec<OnetimeLink>, String>  {
         let mut vec = Vec::new();
-        vec.push(OnetimeLink {
-            filename: String::from("file.zip"),
-            token: String::from("abc123"),
-            created_at: 123,
-            downloaded_at: None,
-            ip_address: None,
-        });
-
+        for attributes in attributes_vec.into_iter() {
+            match Self::build_link(attributes) {
+                Err(why) => return Err(format!("Failed collecting links: {}", why)),
+                Ok(link) => vec.push(link),
+            }
+        }
         Ok(vec)
     }
 
+    async fn list_links (&self) -> Result<Vec<OnetimeLink>, String> {
+        const TOKEN_SUBSTITUTE: &'static str = "#Token";
+
+        let expression_attribute_names = hashmap! {
+            TOKEN_SUBSTITUTE.to_string() => Self::FIELD_TOKEN.to_string(),
+        };
+
+        let projection_expression = [
+            TOKEN_SUBSTITUTE,
+            Self::FIELD_FILENAME,
+            Self::FIELD_CREATED_AT,
+            Self::FIELD_DOWNLOADED_AT,
+            Self::FIELD_IP_ADDRESS,
+        ].join(", ");
+
+        // https://docs.rs/rusoto_dynamodb/0.45.0/rusoto_dynamodb/
+        let request = ScanInput {
+            projection_expression: Some(projection_expression),
+            expression_attribute_names: Some(expression_attribute_names),
+            table_name: self.links_table.clone(),
+            ..Default::default()
+        };
+
+        match self.client.scan(request).await {//.map(|output| true)
+            Err(why) => Err(format!("List links failed: {}", why.to_string())),
+            Ok(output) => match output.items {
+                None => Err("No links found".to_string()),
+                Some(attributes_vec) => Self::collect_links(attributes_vec),
+            }
+        }
+    }
+
     fn build_link (
-        &self,
-        attributes: HashMap<String, AttributeValue>,
-        ip_address: String,
+        attributes: HashMap<String, AttributeValue>
     ) -> Result<OnetimeLink, String> {
         let token = ddb_attr_s(&attributes, &Self::FIELD_TOKEN.to_string())?;
         let filename = ddb_attr_s(&attributes, &Self::FIELD_FILENAME.to_string())?;
         let created_at = ddb_attr_n(&attributes, &Self::FIELD_CREATED_AT.to_string())?;
-        // let downloaded_at = ddb_attr_on(attributes, &Self::FIELD_UPDATED_AT.to_string())?;
-        // let ip_address = ddb_attr_os(attributes, &Self::FIELD_FILENAME.to_string())?;
-
-        let now = self.time_provider.unix_ts_ms();
+        let downloaded_at = ddb_attr_on(&attributes, &Self::FIELD_DOWNLOADED_AT.to_string())?;
+        let ip_address = ddb_attr_os(&attributes, &Self::FIELD_IP_ADDRESS.to_string())?;
 
         Ok(OnetimeLink {
             token: token,
             filename: filename,
             created_at: created_at,
-            downloaded_at: Some(now),
-            ip_address: Some(ip_address),
+            downloaded_at: downloaded_at,
+            ip_address: ip_address,
         })
     }
 
     async fn get_link (
         &self,
         token: String,
-        ip_address: String,
     ) -> Result<OnetimeLink, String> {
         // https://www.rusoto.org/futures.html has example uses
         // ... maybe use https://docs.rs/crate/serde_dynamodb/0.6.0 ?
@@ -456,11 +542,13 @@ impl DynamodbStorage {//for OnetimeStorage
             Err(why) => Err(format!("Get link failed: {}", why.to_string())),
             Ok(output) => match output.item {
                 None => Err("Link not found".to_string()),
-                Some(attributes) => self.build_link(attributes, ip_address),
+                Some(attributes) => Self::build_link(attributes),
             }
         }
     }
 }
+
+// ----------------------------------------------------------------
 
 #[derive(Clone)]
 struct OnetimeDownloaderService {
@@ -499,12 +587,12 @@ fn check_rate_limit (req: &HttpRequest) -> Result<bool, HttpResponse> {
 async fn list_files (
     req: HttpRequest,
     service: web::Data<OnetimeDownloaderService>,
-) -> Result<HttpResponse, HttpResponse> {
+) -> Result<web::Json<Vec<OnetimeFile>>, HttpResponse> {
     println!("list files");
     check_api_key(&req, service.config.api_key_files.as_str())?;
 
     match service.storage.list_files().await {
-        Ok(_) => Ok(HttpResponse::Ok().body("list files!")),
+        Ok(files) => Ok(web::Json(files)),
         Err(why) => Err(HttpResponse::InternalServerError().body(format!("Something went wrong! {}", why))),
     }
 }
@@ -512,12 +600,12 @@ async fn list_files (
 async fn list_links (
     req: HttpRequest,
     service: web::Data<OnetimeDownloaderService>,
-) -> Result<HttpResponse, HttpResponse> {
+) -> Result<web::Json<Vec<OnetimeLink>>, HttpResponse> {
     println!("list links");
     check_api_key(&req, service.config.api_key_links.as_str())?;
 
     match service.storage.list_links().await {
-        Ok(_) => Ok(HttpResponse::Ok().body("list links!")),
+        Ok(links) => Ok(web::Json(links)),
         Err(why) => Err(HttpResponse::InternalServerError().body(format!("Something went wrong! {}", why))),
     }
 }
@@ -592,65 +680,41 @@ async fn add_file (
 
 async fn add_link (
     req: HttpRequest,
-    mut payload: Multipart,
+    payload: web::Json<CreateLink>,
     service: web::Data<OnetimeDownloaderService>,
 ) -> Result<HttpResponse, HttpResponse> {
     println!("add link");
     check_api_key(&req, service.config.api_key_links.as_str())?;
     check_rate_limit(&req)?;
 
-    let mut filename: Option<String> = None;
+    // TODO validate filename is stored file
+    if true {
+        let now = service.time_provider.unix_ts_ms();
+        // https://rust-lang-nursery.github.io/rust-cookbook/algorithms/randomness.html
+        let n: u64 = rand::thread_rng().gen();
 
-    while let Ok(Some(field)) = payload.try_next().await {
-        let content_disposition = field.content_disposition().unwrap();
-        let field_name = content_disposition.get_name().unwrap().to_owned();
+        let token = format!("{:016x}{:016x}", now, n);
+        println!("token {}", token);
+        let url = format!("/download/{}", token);
 
-        match content_disposition.get_filename() {
-            Some(filename) => {
-                println!("'{}' filename '{}'", field_name, filename);
-            }
-            None => {
-                println!("'{}' not a file!", field_name);
-                if field_name == "filename" {
-                    let val = collect_chunks(field, service.config.max_len_value).await?;
-                    filename = Some(String::from_utf8(val).unwrap());
-                }
-            }
-        }
-    }
+        let link = OnetimeLink {
+            filename: payload.filename.clone(),
+            token: token,
+            created_at: now,
+            downloaded_at: None,
+            ip_address: None,
+        };
 
-    if filename.is_some() {
-        // TODO validate filename is stored file
-        if true {
-            let now = service.time_provider.unix_ts_ms();
-            // https://rust-lang-nursery.github.io/rust-cookbook/algorithms/randomness.html
-            let n: u64 = rand::thread_rng().gen();
-
-            let token = format!("{:016x}{:016x}", now, n);
-            println!("token {}", token);
-            let url = format!("/download/{}", token);
-
-            let link = OnetimeLink {
-                filename: filename.unwrap(),
-                token: token,
-                created_at: now,
-                downloaded_at: None,
-                ip_address: None,
-            };
-
-            match service.storage.add_link(link).await {
-                Ok(_) => Ok(
-                    HttpResponse::Ok()
-                        .content_type("text/plain")
-                        .body(url)
-                ),
-                Err(why) => Err(HttpResponse::InternalServerError().body(format!("Something went wrong! {}", why))),
-            }
-        } else {
-            Err(HttpResponse::BadRequest().body("Invalid filename for link!"))
+        match service.storage.add_link(link).await {
+            Ok(_) => Ok(
+                HttpResponse::Ok()
+                    .content_type("text/plain")
+                    .body(url)
+            ),
+            Err(why) => Err(HttpResponse::InternalServerError().body(format!("Something went wrong! {}", why))),
         }
     } else {
-        Err(HttpResponse::BadRequest().body("Must provide filename for file"))
+        Err(HttpResponse::BadRequest().body("Invalid filename for link!"))
     }
 }
 
@@ -664,16 +728,20 @@ async fn download_link (
     }
 
     let token = req.match_info().get("token").unwrap().to_string();
-    let ip = req.connection_info().remote().unwrap().to_string();
-    println!("downloading... {} by {}", token, ip);
+    let ip_address = req.connection_info().remote().unwrap().to_string();
+    println!("downloading... {} by {}", token, ip_address);
 
     let not_found_file = format!("Could not find file for link {}", token);
-    let filename = match service.storage.get_link(token, ip).await {
+    let filename = match service.storage.get_link(token).await {
         Ok(link) => link.filename,
         Err(why) => return HttpResponse::NotFound().body(
             format!("{}: {}",  not_found_file, why)
         )
     };
+
+    // TODO: update downloaded_at and ip_address for link to mark it as unavailable for future downloads
+    // make sure that this can return false to confirm that it did not update -- including that it had already been downloaded in a separate thread
+    // ddb: return_values = ALL_OLD
 
     let not_found_contents = format!("Could not find contents for filename {}", filename);
     let contents = match service.storage.get_file(filename).await {
@@ -688,6 +756,8 @@ async fn download_link (
         .content_type("application/octet-stream")
         .body(contents)
 }
+
+// ----------------------------------------------------------------
 
 fn build_service () -> OnetimeDownloaderService {
     let time_provider = SystemTimeProvider {};
@@ -704,7 +774,6 @@ fn build_service () -> OnetimeDownloaderService {
         storage: storage,
     }
 }
-
 
 #[actix_rt::main]
 async fn main () -> io::Result<()> {
