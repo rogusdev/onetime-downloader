@@ -9,7 +9,7 @@ Generate onetime download links for files stored in some kind of (cloud based?) 
 - [x] get endpoint to download file using custom url
 - [x] updated downloaded_at and prevent future downloads when downloading file
 - [x] get endpoint returns json list of available links for a given filename
-- [ ] separate out modules into files and maybe folders (storage providers)
+- [x] separate out modules into files and maybe folders (storage providers)
 - [ ] unit tests for ^
 - [ ] dockerfile to run ^
 
