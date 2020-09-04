@@ -14,6 +14,7 @@ https://www.rusoto.org/regions.html
 use std::collections::HashMap;
 use bytes::{Bytes};
 use maplit::hashmap;
+use async_trait::async_trait;
 
 use rusoto_core::{Region};
 use rusoto_dynamodb::{
@@ -26,7 +27,7 @@ use rusoto_dynamodb::{
 };
 
 use crate::time_provider::TimeProvider;
-use crate::objects::{OnetimeDownloaderConfig, OnetimeFile, OnetimeLink};
+use crate::objects::{OnetimeDownloaderConfig, OnetimeFile, OnetimeLink, OnetimeStorage};
 
 
 #[derive(Clone)]
@@ -111,6 +112,15 @@ impl DynamodbStorage {
     const DEFAULT_TABLE_FILES: &'static str = "Onetime.Files";
     const DEFAULT_TABLE_LINKS: &'static str = "Onetime.Links";
 
+    const FIELD_FILENAME: &'static str = "Filename";
+    const FIELD_CONTENTS: &'static str = "Contents";
+    const FIELD_CREATED_AT: &'static str = "CreatedAt";
+    const FIELD_UPDATED_AT: &'static str = "UpdatedAt";
+
+    const FIELD_TOKEN: &'static str = "Token";
+    const FIELD_DOWNLOADED_AT: &'static str = "DownloadedAt";
+    const FIELD_IP_ADDRESS: &'static str = "IpAddress";
+
     pub fn from_env (time_provider: Box<dyn TimeProvider>) -> DynamodbStorage {
         DynamodbStorage {
             time_provider: time_provider,
@@ -120,19 +130,78 @@ impl DynamodbStorage {
             client: DynamoDbClient::new(Region::UsEast1),
         }
     }
-}
 
-impl DynamodbStorage {//for OnetimeStorage
-    const FIELD_FILENAME: &'static str = "Filename";
-    const FIELD_CONTENTS: &'static str = "Contents";
-    const FIELD_CREATED_AT: &'static str = "CreatedAt";
-    const FIELD_UPDATED_AT: &'static str = "UpdatedAt";
+    fn build_file (
+        attributes: HashMap<String, AttributeValue>,
+    ) -> Result<OnetimeFile, String> {
+        let filename = ddb_attr_s(&attributes, &Self::FIELD_FILENAME.to_string())?;
+        let contents = ddb_attr_b(&attributes, &Self::FIELD_CONTENTS.to_string())?;
+        let created_at = ddb_attr_n(&attributes, &Self::FIELD_CREATED_AT.to_string())?;
+        let updated_at = ddb_attr_n(&attributes, &Self::FIELD_UPDATED_AT.to_string())?;
+
+        Ok(OnetimeFile {
+            filename: filename,
+            contents: contents,
+            created_at: created_at,
+            updated_at: updated_at,
+        })
+    }
+
+    fn build_link (
+        attributes: HashMap<String, AttributeValue>
+    ) -> Result<OnetimeLink, String> {
+        let token = ddb_attr_s(&attributes, &Self::FIELD_TOKEN.to_string())?;
+        let filename = ddb_attr_s(&attributes, &Self::FIELD_FILENAME.to_string())?;
+        let created_at = ddb_attr_n(&attributes, &Self::FIELD_CREATED_AT.to_string())?;
+        let downloaded_at = ddb_attr_on(&attributes, &Self::FIELD_DOWNLOADED_AT.to_string())?;
+        let ip_address = ddb_attr_os(&attributes, &Self::FIELD_IP_ADDRESS.to_string())?;
+
+        Ok(OnetimeLink {
+            token: token,
+            filename: filename,
+            created_at: created_at,
+            downloaded_at: downloaded_at,
+            ip_address: ip_address,
+        })
+    }
+
+    fn collect_files (attributes_vec: Vec<HashMap<String, AttributeValue>>) -> Result<Vec<OnetimeFile>, String>  {
+        let mut vec = Vec::new();
+        // https://stackoverflow.com/questions/34733811/what-is-the-difference-between-iter-and-into-iter
+        for attributes in attributes_vec.into_iter() {
+            match Self::build_file(attributes) {
+                Err(why) => return Err(format!("Failed collecting files: {}", why)),
+                Ok(file) => vec.push(file),
+            }
+        }
+        Ok(vec)
+    }
+
+    fn collect_links (attributes_vec: Vec<HashMap<String, AttributeValue>>) -> Result<Vec<OnetimeLink>, String>  {
+        let mut vec = Vec::new();
+        for attributes in attributes_vec.into_iter() {
+            // TODO: https://doc.rust-lang.org/reference/types/function-pointer.html -- maybe do collect_links and collect_files like this
+            match Self::build_link(attributes) {
+                Err(why) => return Err(format!("Failed collecting links: {}", why)),
+                Ok(link) => vec.push(link),
+            }
+        }
+        Ok(vec)
+    }
 
     fn filename_key (&self, filename: String) -> HashMap<String, AttributeValue> {
         ddb_key_s(Self::FIELD_FILENAME.to_string(), filename)
     }
 
-    pub async fn add_file (&self, file: OnetimeFile) -> Result<bool, String> {
+    fn token_key (&self, token: String) -> HashMap<String, AttributeValue> {
+        ddb_key_s(Self::FIELD_TOKEN.to_string(), token)
+    }
+}
+
+// https://github.com/dtolnay/async-trait#non-threadsafe-futures
+#[async_trait(?Send)]
+impl OnetimeStorage for DynamodbStorage {
+    async fn add_file (&self, file: OnetimeFile) -> Result<bool, String> {
         let item = hashmap! {
             Self::FIELD_FILENAME.to_string() => ddb_val_s(file.filename),
             Self::FIELD_CONTENTS.to_string() => ddb_val_b(file.contents),
@@ -152,19 +221,7 @@ impl DynamodbStorage {//for OnetimeStorage
         }
     }
 
-    fn collect_files (attributes_vec: Vec<HashMap<String, AttributeValue>>) -> Result<Vec<OnetimeFile>, String>  {
-        let mut vec = Vec::new();
-        // https://stackoverflow.com/questions/34733811/what-is-the-difference-between-iter-and-into-iter
-        for attributes in attributes_vec.into_iter() {
-            match Self::build_file(attributes) {
-                Err(why) => return Err(format!("Failed collecting files: {}", why)),
-                Ok(file) => vec.push(file),
-            }
-        }
-        Ok(vec)
-    }
-
-    pub async fn list_files (&self) -> Result<Vec<OnetimeFile>, String>  {
+    async fn list_files (&self) -> Result<Vec<OnetimeFile>, String>  {
         let projection_expression = [
             Self::FIELD_FILENAME,
             Self::FIELD_CONTENTS,
@@ -188,23 +245,7 @@ impl DynamodbStorage {//for OnetimeStorage
         }
     }
 
-    fn build_file (
-        attributes: HashMap<String, AttributeValue>,
-    ) -> Result<OnetimeFile, String> {
-        let filename = ddb_attr_s(&attributes, &Self::FIELD_FILENAME.to_string())?;
-        let contents = ddb_attr_b(&attributes, &Self::FIELD_CONTENTS.to_string())?;
-        let created_at = ddb_attr_n(&attributes, &Self::FIELD_CREATED_AT.to_string())?;
-        let updated_at = ddb_attr_n(&attributes, &Self::FIELD_UPDATED_AT.to_string())?;
-
-        Ok(OnetimeFile {
-            filename: filename,
-            contents: contents,
-            created_at: created_at,
-            updated_at: updated_at,
-        })
-    }
-
-    pub async fn get_file (&self, filename: String) -> Result<OnetimeFile, String>  {
+    async fn get_file (&self, filename: String) -> Result<OnetimeFile, String>  {
         // https://www.rusoto.org/futures.html has example uses
         // ... maybe use https://docs.rs/crate/serde_dynamodb/0.6.0 ?
         let request = GetItemInput {
@@ -222,15 +263,7 @@ impl DynamodbStorage {//for OnetimeStorage
         }
     }
 
-    const FIELD_TOKEN: &'static str = "Token";
-    const FIELD_DOWNLOADED_AT: &'static str = "DownloadedAt";
-    const FIELD_IP_ADDRESS: &'static str = "IpAddress";
-
-    fn token_key (&self, token: String) -> HashMap<String, AttributeValue> {
-        ddb_key_s(Self::FIELD_TOKEN.to_string(), token)
-    }
-
-    pub async fn add_link (&self, link: OnetimeLink) -> Result<bool, String> {
+    async fn add_link (&self, link: OnetimeLink) -> Result<bool, String> {
         let mut item = hashmap! {
             Self::FIELD_TOKEN.to_string() => ddb_val_s(link.token),
             Self::FIELD_FILENAME.to_string() => ddb_val_s(link.filename),
@@ -257,19 +290,7 @@ impl DynamodbStorage {//for OnetimeStorage
         }
     }
 
-    fn collect_links (attributes_vec: Vec<HashMap<String, AttributeValue>>) -> Result<Vec<OnetimeLink>, String>  {
-        let mut vec = Vec::new();
-        for attributes in attributes_vec.into_iter() {
-            // TODO: https://doc.rust-lang.org/reference/types/function-pointer.html -- maybe do collect_links and collect_files like this
-            match Self::build_link(attributes) {
-                Err(why) => return Err(format!("Failed collecting links: {}", why)),
-                Ok(link) => vec.push(link),
-            }
-        }
-        Ok(vec)
-    }
-
-    pub async fn list_links (&self) -> Result<Vec<OnetimeLink>, String> {
+    async fn list_links (&self) -> Result<Vec<OnetimeLink>, String> {
         const TOKEN_SUBSTITUTE: &'static str = "#Token";
 
         let expression_attribute_names = hashmap! {
@@ -301,25 +322,7 @@ impl DynamodbStorage {//for OnetimeStorage
         }
     }
 
-    fn build_link (
-        attributes: HashMap<String, AttributeValue>
-    ) -> Result<OnetimeLink, String> {
-        let token = ddb_attr_s(&attributes, &Self::FIELD_TOKEN.to_string())?;
-        let filename = ddb_attr_s(&attributes, &Self::FIELD_FILENAME.to_string())?;
-        let created_at = ddb_attr_n(&attributes, &Self::FIELD_CREATED_AT.to_string())?;
-        let downloaded_at = ddb_attr_on(&attributes, &Self::FIELD_DOWNLOADED_AT.to_string())?;
-        let ip_address = ddb_attr_os(&attributes, &Self::FIELD_IP_ADDRESS.to_string())?;
-
-        Ok(OnetimeLink {
-            token: token,
-            filename: filename,
-            created_at: created_at,
-            downloaded_at: downloaded_at,
-            ip_address: ip_address,
-        })
-    }
-
-    pub async fn get_link (
+    async fn get_link (
         &self,
         token: String,
     ) -> Result<OnetimeLink, String> {
@@ -340,7 +343,7 @@ impl DynamodbStorage {//for OnetimeStorage
         }
     }
 
-    pub async fn mark_downloaded (
+    async fn mark_downloaded (
         &self,
         link: OnetimeLink,
         ip_address: String,

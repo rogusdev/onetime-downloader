@@ -3,10 +3,10 @@ use std::env;
 use bytes::{Bytes};
 use serde::{Serialize, Deserialize};
 use serde::ser::{Serializer, SerializeStruct};
-//use async_trait::async_trait;
+use async_trait::async_trait;
+use dyn_clonable::clonable;
 
 use crate::time_provider::TimeProvider;
-use crate::storage::dynamodb::DynamodbStorage;
 
 
 #[derive(Debug, Clone)]
@@ -81,15 +81,18 @@ pub struct CreateLink {
     pub filename: String,
 }
 
-// #[async_trait]
-// trait OnetimeStorage {
-//     async fn add_file (&self, filename: String, contents: Bytes) -> Result<bool, String>;
-//     async fn list_files (&self) -> Result<Vec<OnetimeFile>, String>;
-//     async fn get_file (&self, filename: String) -> Result<OnetimeFile, String>;
-//     async fn add_link (&self, link: String, filename: String) -> Result<bool, String>;
-//     async fn list_links (&self) -> Result<Vec<OnetimeLink>, String>;
-//     async fn get_link (&self, token: String) -> Result<OnetimeLink, String>;
-// }
+// https://github.com/dtolnay/async-trait#non-threadsafe-futures
+#[async_trait(?Send)]
+#[clonable]
+pub trait OnetimeStorage : Clone {
+    async fn add_file (&self, file: OnetimeFile) -> Result<bool, String>;
+    async fn list_files (&self) -> Result<Vec<OnetimeFile>, String>;
+    async fn get_file (&self, filename: String) -> Result<OnetimeFile, String>;
+    async fn add_link (&self, link: OnetimeLink) -> Result<bool, String>;
+    async fn list_links (&self) -> Result<Vec<OnetimeLink>, String>;
+    async fn get_link (&self, token: String) -> Result<OnetimeLink, String>;
+    async fn mark_downloaded (&self, link: OnetimeLink, ip_address: String, downloaded_at: u64) -> Result<bool, String>;
+}
 
 #[derive(Clone)]
 pub struct OnetimeDownloaderService {
@@ -97,5 +100,5 @@ pub struct OnetimeDownloaderService {
     // https://stackoverflow.com/questions/48833009/the-fold-method-cannot-be-invoked-on-a-trait-object
     pub time_provider: Box<dyn TimeProvider>,
     pub config: OnetimeDownloaderConfig,
-    pub storage: DynamodbStorage,
+    pub storage: Box<dyn OnetimeStorage>,
 }
