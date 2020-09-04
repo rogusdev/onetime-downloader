@@ -1,17 +1,27 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
+use dyn_clonable::clonable;
 
 
-trait TimeProvider {
-    fn unix_ts_ms (&self);
+// https://stackoverflow.com/questions/51822118/why-can-a-function-on-a-trait-object-not-be-called-when-bounded-with-self-size
+// https://stackoverflow.com/questions/42620022/why-does-a-generic-method-inside-a-trait-require-trait-object-to-be-sized
+// https://www.reddit.com/r/rust/comments/7q3bz8/trait_object_with_clone/
+// https://stackoverflow.com/questions/26212397/references-to-traits-in-structs
+// https://doc.rust-lang.org/book/ch17-02-trait-objects.html
+// https://stackoverflow.com/questions/28219519/are-polymorphic-variables-allowed
+// https://stackoverflow.com/questions/30353462/how-to-clone-a-struct-storing-a-boxed-trait-object
+// https://stackoverflow.com/questions/50017987/cant-clone-vecboxtrait-because-trait-cannot-be-made-into-an-object
+#[clonable]
+pub trait TimeProvider : Clone {
+    fn unix_ts_ms (&self) -> u64;
 }
 
 #[derive(Debug, Clone)]
 pub struct SystemTimeProvider {
 }
 
-impl SystemTimeProvider {//TimeProvider for
-    pub fn unix_ts_ms (&self) -> u64 {
+impl TimeProvider for SystemTimeProvider {
+    fn unix_ts_ms (&self) -> u64 {
         let dur = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("Time went backwards");
@@ -20,13 +30,19 @@ impl SystemTimeProvider {//TimeProvider for
     }
 }
 
-// #[derive(Debug, Clone)]
-// pub struct FixedTimeProvider {
-//     fixed_unix_ts_ms: u64,
-// }
+#[derive(Debug, Clone)]
+pub struct FixedTimeProvider {
+    fixed_unix_ts_ms: u64,
+}
 
-// impl FixedTimeProvider {//TimeProvider for
-//     pub fn unix_ts_ms (&self) -> u64 {
-//         self.fixed_unix_ts_ms
-//     }
-// }
+impl FixedTimeProvider {
+    pub fn set_fixed_unix_ts_ms (&mut self, new_unix_ts_ms: u64) {
+        self.fixed_unix_ts_ms = new_unix_ts_ms;
+    }
+}
+
+impl TimeProvider for FixedTimeProvider {
+    fn unix_ts_ms (&self) -> u64 {
+        self.fixed_unix_ts_ms
+    }
+}

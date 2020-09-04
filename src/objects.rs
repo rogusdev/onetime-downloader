@@ -5,9 +5,8 @@ use serde::{Serialize, Deserialize};
 use serde::ser::{Serializer, SerializeStruct};
 //use async_trait::async_trait;
 
-use crate::time_provider::SystemTimeProvider;
+use crate::time_provider::TimeProvider;
 use crate::storage::dynamodb::DynamodbStorage;
-
 
 
 #[derive(Debug, Clone)]
@@ -94,7 +93,9 @@ pub struct CreateLink {
 
 #[derive(Clone)]
 pub struct OnetimeDownloaderService {
-    pub time_provider: SystemTimeProvider,
+    // box vs generics: dynamic vs static dispatch
+    // https://stackoverflow.com/questions/48833009/the-fold-method-cannot-be-invoked-on-a-trait-object
+    pub time_provider: Box<dyn TimeProvider>,
     pub config: OnetimeDownloaderConfig,
     pub storage: DynamodbStorage,
 }

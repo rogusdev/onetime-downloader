@@ -1,4 +1,5 @@
 
+// https://stackoverflow.com/questions/56714619/including-a-file-from-another-that-is-not-main-rs-nor-lib-rs
 mod time_provider;
 mod objects;
 mod storage;
@@ -7,7 +8,7 @@ mod handlers;
 use dotenv::dotenv;
 use actix_web::{web, App, HttpServer};
 
-use crate::time_provider::SystemTimeProvider;
+use crate::time_provider::{SystemTimeProvider, TimeProvider};
 use crate::objects::{OnetimeDownloaderConfig, OnetimeDownloaderService};
 use crate::storage::dynamodb::DynamodbStorage;
 use crate::handlers::{list_files, list_links, add_file, add_link, download_link, not_found};
@@ -105,13 +106,14 @@ aws dynamodb create-table \
 
 
 fn build_service () -> OnetimeDownloaderService {
-    let time_provider = SystemTimeProvider {};
+    // https://stackoverflow.com/questions/28219519/are-polymorphic-variables-allowed
+    let time_provider: Box<dyn TimeProvider> = Box::new(SystemTimeProvider {});
 
     let config = OnetimeDownloaderConfig::from_env();
     println!("config {:?}", config);
 
     // TODO: what I want is to have a single instance get passed as traits (interfaces) that can be swapped out by config
-    let storage = DynamodbStorage::from_env(SystemTimeProvider {});
+    let storage = DynamodbStorage::from_env(time_provider.clone());
 
     OnetimeDownloaderService {
         time_provider: time_provider,

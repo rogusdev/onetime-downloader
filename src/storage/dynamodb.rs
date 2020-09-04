@@ -25,13 +25,13 @@ use rusoto_dynamodb::{
     ScanInput
 };
 
-use crate::time_provider::SystemTimeProvider;
+use crate::time_provider::TimeProvider;
 use crate::objects::{OnetimeDownloaderConfig, OnetimeFile, OnetimeLink};
 
 
 #[derive(Clone)]
 pub struct DynamodbStorage {
-    time_provider: SystemTimeProvider,
+    time_provider: Box<dyn TimeProvider>,
     files_table: String,
     links_table: String,
     client: DynamoDbClient,
@@ -111,12 +111,12 @@ impl DynamodbStorage {
     const DEFAULT_TABLE_FILES: &'static str = "Onetime.Files";
     const DEFAULT_TABLE_LINKS: &'static str = "Onetime.Links";
 
-    pub fn from_env (time_provider: SystemTimeProvider) -> DynamodbStorage {
+    pub fn from_env (time_provider: Box<dyn TimeProvider>) -> DynamodbStorage {
         DynamodbStorage {
             time_provider: time_provider,
             files_table: OnetimeDownloaderConfig::env_var_string("DDB_FILES_TABLE", String::from(Self::DEFAULT_TABLE_FILES)),
             links_table: OnetimeDownloaderConfig::env_var_string("DDB_LINKS_TABLE", String::from(Self::DEFAULT_TABLE_LINKS)),
-            // https://docs.rs/rusoto_dynamodb/0.44.0/rusoto_dynamodb/
+            // https://docs.rs/rusoto_dynamodb/0.45.0/rusoto_dynamodb/
             client: DynamoDbClient::new(Region::UsEast1),
         }
     }
