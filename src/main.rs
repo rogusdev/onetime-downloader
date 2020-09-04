@@ -1,16 +1,16 @@
 
 mod time_provider;
 mod objects;
-mod dynamodb;
+mod storage;
 mod handlers;
 
 use dotenv::dotenv;
 use actix_web::{web, App, HttpServer};
 
-use time_provider::SystemTimeProvider;
-use objects::{OnetimeDownloaderConfig, OnetimeDownloaderService};
-use dynamodb::DynamodbStorage;
-use handlers::{list_files, list_links, add_file, add_link, download_link, not_found};
+use crate::time_provider::SystemTimeProvider;
+use crate::objects::{OnetimeDownloaderConfig, OnetimeDownloaderService};
+use crate::storage::dynamodb::DynamodbStorage;
+use crate::handlers::{list_files, list_links, add_file, add_link, download_link, not_found};
 
 
 // postgres mapping: https://github.com/Dowwie/tokio-postgres-mapper

@@ -6,7 +6,7 @@ use serde::ser::{Serializer, SerializeStruct};
 //use async_trait::async_trait;
 
 use crate::time_provider::SystemTimeProvider;
-use crate::dynamodb::DynamodbStorage;
+use crate::storage::dynamodb::DynamodbStorage;
 
 
 
