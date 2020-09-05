@@ -12,6 +12,7 @@ https://www.rusoto.org/regions.html
 */
 
 use std::collections::HashMap;
+use std::convert::TryFrom;
 use bytes::{Bytes};
 use maplit::hashmap;
 use async_trait::async_trait;
@@ -30,6 +31,19 @@ use crate::time_provider::TimeProvider;
 use crate::objects::{OnetimeDownloaderConfig, OnetimeFile, OnetimeLink, OnetimeStorage};
 
 
+const DEFAULT_TABLE_FILES: &'static str = "Onetime.Files";
+const DEFAULT_TABLE_LINKS: &'static str = "Onetime.Links";
+
+const FIELD_FILENAME: &'static str = "Filename";
+const FIELD_CONTENTS: &'static str = "Contents";
+const FIELD_CREATED_AT: &'static str = "CreatedAt";
+const FIELD_UPDATED_AT: &'static str = "UpdatedAt";
+
+const FIELD_TOKEN: &'static str = "Token";
+const FIELD_DOWNLOADED_AT: &'static str = "DownloadedAt";
+const FIELD_IP_ADDRESS: &'static str = "IpAddress";
+
+
 #[derive(Clone)]
 pub struct DynamodbStorage {
     time_provider: Box<dyn TimeProvider>,
@@ -38,125 +52,128 @@ pub struct DynamodbStorage {
     client: DynamoDbClient,
 }
 
-fn ddb_val_s (val: String) -> AttributeValue {
-    AttributeValue {
-        s: Some(val),
-        ..Default::default()
+// http://xion.io/post/code/rust-extension-traits.html
+trait DdbAttributeValueExt {
+    fn from_s (val: String) -> AttributeValue;
+    fn from_n (val: u64) -> AttributeValue;
+    fn from_b (val: Bytes) -> AttributeValue;
+}
+
+impl DdbAttributeValueExt for AttributeValue {
+    fn from_s (val: String) -> AttributeValue {
+        AttributeValue {
+            s: Some(val),
+            ..Default::default()
+        }
+    }
+
+    fn from_n (val: u64) -> AttributeValue {
+        AttributeValue {
+            n: Some(val.to_string()),
+            ..Default::default()
+        }
+    }
+
+    fn from_b (val: Bytes) -> AttributeValue {
+        AttributeValue {
+            b: Some(val),
+            ..Default::default()
+        }
     }
 }
 
-fn ddb_val_n (val: u64) -> AttributeValue {
-    AttributeValue {
-        n: Some(val.to_string()),
-        ..Default::default()
+trait DdbAttributesExt {
+    fn new_key (key: String, val: String) -> Self;
+    fn get_s (&self, field: &String) -> Result<String, String>;
+    fn get_os (&self, field: &String) -> Result<Option<String>, String>;
+    fn get_b (&self, field: &String) -> Result<Bytes, String>;
+    fn get_n (&self, field: &String) -> Result<u64, String>;
+    fn get_on (&self, field: &String) -> Result<Option<u64>, String>;
+}
+
+type DdbAttributes = HashMap<String, AttributeValue>;
+
+impl DdbAttributesExt for DdbAttributes {
+    fn new_key (key: String, val: String) -> Self {
+        hashmap! {
+            key => AttributeValue::from_s(val)
+        }
+
+        // let mut item = HashMap::new();
+        // item.insert(key, AttributeValue::from_s(val));
     }
-}
 
-fn ddb_val_b (val: Bytes) -> AttributeValue {
-    AttributeValue {
-        b: Some(val),
-        ..Default::default()
-    }
-}
-
-fn ddb_key_s (key: String, val: String) -> HashMap<String, AttributeValue> {
-    hashmap! {
-        key => ddb_val_s(val)
+    fn get_s (&self, field: &String) -> Result<String, String> {
+        // clone because get returns Option<&V> (not Option<V>)
+        //  and thus without clone, this attempts a move out of that (that fails to compile)
+        //  https://doc.rust-lang.org/beta/std/collections/struct.HashMap.html#method.get
+        self.get(field).ok_or(format!("Missing field {}", field))?.clone()
+            .s.ok_or(format!("Empty field {}", field))
     }
 
-    // let mut item = HashMap::new();
-    // item.insert(key, ddb_val_s(val));
-}
-
-fn ddb_attr_s (attributes: &HashMap<String, AttributeValue>, field: &String) -> Result<String, String> {
-    // clone because get returns Option<&V> (not Option<V>)
-    //  and thus without clone, this attempts a move out of that (that fails to compile)
-    //  https://doc.rust-lang.org/beta/std/collections/struct.HashMap.html#method.get
-    attributes.get(field).ok_or(format!("Missing field {}", field))?.clone()
-        .s.ok_or(format!("Empty field {}", field))
-}
-
-fn ddb_attr_os (attributes: &HashMap<String, AttributeValue>, field: &String) -> Result<Option<String>, String> {
-    match attributes.get(field) {
-        None => Ok(None),
-        Some(val) => val.s.clone().ok_or(format!("Empty field {}", field)).map(|s| Some(s))
+    fn get_os (&self, field: &String) -> Result<Option<String>, String> {
+        match self.get(field) {
+            None => Ok(None),
+            Some(val) => val.s.clone().ok_or(format!("Empty field {}", field)).map(|s| Some(s))
+        }
     }
-}
 
-fn ddb_attr_b (attributes: &HashMap<String, AttributeValue>, field: &String) -> Result<Bytes, String> {
-    attributes.get(field).ok_or(format!("Missing field {}", field))?.clone()
-        .b.ok_or(format!("Empty field {}", field))
-        .map(|s| Bytes::from(s))
-}
+    fn get_b (&self, field: &String) -> Result<Bytes, String> {
+        self.get(field).ok_or(format!("Missing field {}", field))?.clone()
+            .b.ok_or(format!("Empty field {}", field))
+            .map(|s| Bytes::from(s))
+    }
 
-fn ddb_attr_n (attributes: &HashMap<String, AttributeValue>, field: &String) -> Result<u64, String> {
-    attributes.get(field).ok_or(format!("Missing field {}", field))?.clone()
-        .n.ok_or(format!("Empty field {}", field))?
-        .parse::<u64>().map_err(|why| format!("Field {} is not a number {}", field, why))
-}
+    fn get_n (&self, field: &String) -> Result<u64, String> {
+        self.get(field).ok_or(format!("Missing field {}", field))?.clone()
+            .n.ok_or(format!("Empty field {}", field))?
+            .parse::<u64>().map_err(|why| format!("Field {} is not a number {}", field, why))
+    }
 
-fn ddb_attr_on (attributes: &HashMap<String, AttributeValue>, field: &String) -> Result<Option<u64>, String> {
-    match attributes.get(field) {
-        None => Ok(None),
-        Some(val) => match val.n.clone() {
-            None => Err(format!("Empty field {}", field)),
-            Some(val) => match val.parse::<u64>() {
-                Err(why) => Err(format!("Field {} is not a number {}", field, why)),
-                Ok(val) => Ok(Some(val)),
+    fn get_on (&self, field: &String) -> Result<Option<u64>, String> {
+        match self.get(field) {
+            None => Ok(None),
+            Some(val) => match val.n.clone() {
+                None => Err(format!("Empty field {}", field)),
+                Some(val) => match val.parse::<u64>() {
+                    Err(why) => Err(format!("Field {} is not a number {}", field, why)),
+                    Ok(val) => Ok(Some(val)),
+                }
             }
         }
     }
 }
 
-impl DynamodbStorage {
-    const DEFAULT_TABLE_FILES: &'static str = "Onetime.Files";
-    const DEFAULT_TABLE_LINKS: &'static str = "Onetime.Links";
 
-    const FIELD_FILENAME: &'static str = "Filename";
-    const FIELD_CONTENTS: &'static str = "Contents";
-    const FIELD_CREATED_AT: &'static str = "CreatedAt";
-    const FIELD_UPDATED_AT: &'static str = "UpdatedAt";
+impl TryFrom<DdbAttributes> for OnetimeFile {
+    type Error = String;
 
-    const FIELD_TOKEN: &'static str = "Token";
-    const FIELD_DOWNLOADED_AT: &'static str = "DownloadedAt";
-    const FIELD_IP_ADDRESS: &'static str = "IpAddress";
+    fn try_from(attributes: DdbAttributes) -> Result<Self, Self::Error> {
+        let filename = attributes.get_s(&FIELD_FILENAME.to_string())?;
+        let contents = attributes.get_b(&FIELD_CONTENTS.to_string())?;
+        let created_at = attributes.get_n(&FIELD_CREATED_AT.to_string())?;
+        let updated_at = attributes.get_n(&FIELD_UPDATED_AT.to_string())?;
 
-    pub fn from_env (time_provider: Box<dyn TimeProvider>) -> DynamodbStorage {
-        DynamodbStorage {
-            time_provider: time_provider,
-            files_table: OnetimeDownloaderConfig::env_var_string("DDB_FILES_TABLE", String::from(Self::DEFAULT_TABLE_FILES)),
-            links_table: OnetimeDownloaderConfig::env_var_string("DDB_LINKS_TABLE", String::from(Self::DEFAULT_TABLE_LINKS)),
-            // https://docs.rs/rusoto_dynamodb/0.45.0/rusoto_dynamodb/
-            client: DynamoDbClient::new(Region::UsEast1),
-        }
-    }
-
-    fn build_file (
-        attributes: HashMap<String, AttributeValue>,
-    ) -> Result<OnetimeFile, String> {
-        let filename = ddb_attr_s(&attributes, &Self::FIELD_FILENAME.to_string())?;
-        let contents = ddb_attr_b(&attributes, &Self::FIELD_CONTENTS.to_string())?;
-        let created_at = ddb_attr_n(&attributes, &Self::FIELD_CREATED_AT.to_string())?;
-        let updated_at = ddb_attr_n(&attributes, &Self::FIELD_UPDATED_AT.to_string())?;
-
-        Ok(OnetimeFile {
+        Ok(Self {
             filename: filename,
             contents: contents,
             created_at: created_at,
             updated_at: updated_at,
         })
     }
+}
 
-    fn build_link (
-        attributes: HashMap<String, AttributeValue>
-    ) -> Result<OnetimeLink, String> {
-        let token = ddb_attr_s(&attributes, &Self::FIELD_TOKEN.to_string())?;
-        let filename = ddb_attr_s(&attributes, &Self::FIELD_FILENAME.to_string())?;
-        let created_at = ddb_attr_n(&attributes, &Self::FIELD_CREATED_AT.to_string())?;
-        let downloaded_at = ddb_attr_on(&attributes, &Self::FIELD_DOWNLOADED_AT.to_string())?;
-        let ip_address = ddb_attr_os(&attributes, &Self::FIELD_IP_ADDRESS.to_string())?;
+impl TryFrom<DdbAttributes> for OnetimeLink {
+    type Error = String;
 
-        Ok(OnetimeLink {
+    fn try_from(attributes: DdbAttributes) -> Result<Self, Self::Error> {
+        let token = attributes.get_s(&FIELD_TOKEN.to_string())?;
+        let filename = attributes.get_s(&FIELD_FILENAME.to_string())?;
+        let created_at = attributes.get_n(&FIELD_CREATED_AT.to_string())?;
+        let downloaded_at = attributes.get_on(&FIELD_DOWNLOADED_AT.to_string())?;
+        let ip_address = attributes.get_os(&FIELD_IP_ADDRESS.to_string())?;
+
+        Ok(Self {
             token: token,
             filename: filename,
             created_at: created_at,
@@ -164,12 +181,24 @@ impl DynamodbStorage {
             ip_address: ip_address,
         })
     }
+}
 
-    fn collect_files (attributes_vec: Vec<HashMap<String, AttributeValue>>) -> Result<Vec<OnetimeFile>, String>  {
+impl DynamodbStorage {
+    pub fn from_env (time_provider: Box<dyn TimeProvider>) -> DynamodbStorage {
+        DynamodbStorage {
+            time_provider: time_provider,
+            files_table: OnetimeDownloaderConfig::env_var_string("DDB_FILES_TABLE", String::from(DEFAULT_TABLE_FILES)),
+            links_table: OnetimeDownloaderConfig::env_var_string("DDB_LINKS_TABLE", String::from(DEFAULT_TABLE_LINKS)),
+            // https://docs.rs/rusoto_dynamodb/0.45.0/rusoto_dynamodb/
+            client: DynamoDbClient::new(Region::UsEast1),
+        }
+    }
+
+    fn collect_files (attributes_vec: Vec<DdbAttributes>) -> Result<Vec<OnetimeFile>, String>  {
         let mut vec = Vec::new();
         // https://stackoverflow.com/questions/34733811/what-is-the-difference-between-iter-and-into-iter
         for attributes in attributes_vec.into_iter() {
-            match Self::build_file(attributes) {
+            match OnetimeFile::try_from(attributes) {
                 Err(why) => return Err(format!("Failed collecting files: {}", why)),
                 Ok(file) => vec.push(file),
             }
@@ -177,11 +206,11 @@ impl DynamodbStorage {
         Ok(vec)
     }
 
-    fn collect_links (attributes_vec: Vec<HashMap<String, AttributeValue>>) -> Result<Vec<OnetimeLink>, String>  {
+    fn collect_links (attributes_vec: Vec<DdbAttributes>) -> Result<Vec<OnetimeLink>, String>  {
         let mut vec = Vec::new();
         for attributes in attributes_vec.into_iter() {
             // TODO: https://doc.rust-lang.org/reference/types/function-pointer.html -- maybe do collect_links and collect_files like this
-            match Self::build_link(attributes) {
+            match OnetimeLink::try_from(attributes) {
                 Err(why) => return Err(format!("Failed collecting links: {}", why)),
                 Ok(link) => vec.push(link),
             }
@@ -189,12 +218,12 @@ impl DynamodbStorage {
         Ok(vec)
     }
 
-    fn filename_key (&self, filename: String) -> HashMap<String, AttributeValue> {
-        ddb_key_s(Self::FIELD_FILENAME.to_string(), filename)
+    fn filename_key (&self, filename: String) -> DdbAttributes {
+        DdbAttributes::new_key(FIELD_FILENAME.to_string(), filename)
     }
 
-    fn token_key (&self, token: String) -> HashMap<String, AttributeValue> {
-        ddb_key_s(Self::FIELD_TOKEN.to_string(), token)
+    fn token_key (&self, token: String) -> DdbAttributes {
+        DdbAttributes::new_key(FIELD_TOKEN.to_string(), token)
     }
 }
 
@@ -203,10 +232,10 @@ impl DynamodbStorage {
 impl OnetimeStorage for DynamodbStorage {
     async fn add_file (&self, file: OnetimeFile) -> Result<bool, String> {
         let item = hashmap! {
-            Self::FIELD_FILENAME.to_string() => ddb_val_s(file.filename),
-            Self::FIELD_CONTENTS.to_string() => ddb_val_b(file.contents),
-            Self::FIELD_CREATED_AT.to_string() => ddb_val_n(file.created_at),
-            Self::FIELD_UPDATED_AT.to_string() => ddb_val_n(file.updated_at),
+            FIELD_FILENAME.to_string() => AttributeValue::from_s(file.filename),
+            FIELD_CONTENTS.to_string() => AttributeValue::from_b(file.contents),
+            FIELD_CREATED_AT.to_string() => AttributeValue::from_n(file.created_at),
+            FIELD_UPDATED_AT.to_string() => AttributeValue::from_n(file.updated_at),
         };
 
         let request = PutItemInput {
@@ -223,10 +252,10 @@ impl OnetimeStorage for DynamodbStorage {
 
     async fn list_files (&self) -> Result<Vec<OnetimeFile>, String>  {
         let projection_expression = [
-            Self::FIELD_FILENAME,
-            Self::FIELD_CONTENTS,
-            Self::FIELD_CREATED_AT,
-            Self::FIELD_UPDATED_AT,
+            FIELD_FILENAME,
+            FIELD_CONTENTS,
+            FIELD_CREATED_AT,
+            FIELD_UPDATED_AT,
         ].join(", ");
 
         // https://docs.rs/rusoto_dynamodb/0.45.0/rusoto_dynamodb/
@@ -258,22 +287,22 @@ impl OnetimeStorage for DynamodbStorage {
             Err(why) => Err(format!("Get file failed: {}", why.to_string())),
             Ok(output) => match output.item {
                 None => Err("File not found".to_string()),
-                Some(attributes) => Self::build_file(attributes),
+                Some(attributes) => OnetimeFile::try_from(attributes),
             }
         }
     }
 
     async fn add_link (&self, link: OnetimeLink) -> Result<bool, String> {
         let mut item = hashmap! {
-            Self::FIELD_TOKEN.to_string() => ddb_val_s(link.token),
-            Self::FIELD_FILENAME.to_string() => ddb_val_s(link.filename),
-            Self::FIELD_CREATED_AT.to_string() => ddb_val_n(link.created_at),
+            FIELD_TOKEN.to_string() => AttributeValue::from_s(link.token),
+            FIELD_FILENAME.to_string() => AttributeValue::from_s(link.filename),
+            FIELD_CREATED_AT.to_string() => AttributeValue::from_n(link.created_at),
         };
         if let Some(downloaded_at) = link.downloaded_at {
-            item.insert(Self::FIELD_DOWNLOADED_AT.to_string(), ddb_val_n(downloaded_at));
+            item.insert(FIELD_DOWNLOADED_AT.to_string(), AttributeValue::from_n(downloaded_at));
         }
         if let Some(ip_address) = link.ip_address {
-            item.insert(Self::FIELD_IP_ADDRESS.to_string(), ddb_val_s(ip_address));
+            item.insert(FIELD_IP_ADDRESS.to_string(), AttributeValue::from_s(ip_address));
         }
         // print!("add link item {:?}", item);
 
@@ -294,15 +323,15 @@ impl OnetimeStorage for DynamodbStorage {
         const TOKEN_SUBSTITUTE: &'static str = "#Token";
 
         let expression_attribute_names = hashmap! {
-            TOKEN_SUBSTITUTE.to_string() => Self::FIELD_TOKEN.to_string(),
+            TOKEN_SUBSTITUTE.to_string() => FIELD_TOKEN.to_string(),
         };
 
         let projection_expression = [
             TOKEN_SUBSTITUTE,
-            Self::FIELD_FILENAME,
-            Self::FIELD_CREATED_AT,
-            Self::FIELD_DOWNLOADED_AT,
-            Self::FIELD_IP_ADDRESS,
+            FIELD_FILENAME,
+            FIELD_CREATED_AT,
+            FIELD_DOWNLOADED_AT,
+            FIELD_IP_ADDRESS,
         ].join(", ");
 
         // https://docs.rs/rusoto_dynamodb/0.45.0/rusoto_dynamodb/
@@ -338,7 +367,7 @@ impl OnetimeStorage for DynamodbStorage {
             Err(why) => Err(format!("Get link failed: {}", why.to_string())),
             Ok(output) => match output.item {
                 None => Err("Link not found".to_string()),
-                Some(attributes) => Self::build_link(attributes),
+                Some(attributes) => OnetimeLink::try_from(attributes),
             }
         }
     }
@@ -350,11 +379,11 @@ impl OnetimeStorage for DynamodbStorage {
         downloaded_at: u64
     ) -> Result<bool, String> {
         let item = hashmap! {
-            Self::FIELD_TOKEN.to_string() => ddb_val_s(link.token),
-            Self::FIELD_FILENAME.to_string() => ddb_val_s(link.filename),
-            Self::FIELD_CREATED_AT.to_string() => ddb_val_n(link.created_at),
-            Self::FIELD_DOWNLOADED_AT.to_string() => ddb_val_n(downloaded_at),
-            Self::FIELD_IP_ADDRESS.to_string() => ddb_val_s(ip_address),
+            FIELD_TOKEN.to_string() => AttributeValue::from_s(link.token),
+            FIELD_FILENAME.to_string() => AttributeValue::from_s(link.filename),
+            FIELD_CREATED_AT.to_string() => AttributeValue::from_n(link.created_at),
+            FIELD_DOWNLOADED_AT.to_string() => AttributeValue::from_n(downloaded_at),
+            FIELD_IP_ADDRESS.to_string() => AttributeValue::from_s(ip_address),
         };
 
         let request = PutItemInput {
@@ -368,7 +397,7 @@ impl OnetimeStorage for DynamodbStorage {
             Err(why) => Err(format!("Mark downloaded put failed: {}", why.to_string())),
             Ok(output) => match output.attributes {
                 None => Ok(false),
-                Some(attributes) => match Self::build_link(attributes) {
+                Some(attributes) => match OnetimeLink::try_from(attributes) {
                     Err(why) => Err(format!("Mark downloaded build failed: {}", why.to_string())),
                     Ok(link) => Ok(link.downloaded_at.is_some()),
                 },
