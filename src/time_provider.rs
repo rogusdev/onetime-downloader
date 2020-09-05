@@ -36,6 +36,7 @@ pub struct FixedTimeProvider {
 }
 
 impl FixedTimeProvider {
+    #[allow(dead_code)]
     pub fn set_fixed_unix_ts_ms (&mut self, new_unix_ts_ms: u64) {
         self.fixed_unix_ts_ms = new_unix_ts_ms;
     }

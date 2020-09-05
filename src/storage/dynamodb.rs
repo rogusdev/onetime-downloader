@@ -29,6 +29,7 @@ use rusoto_dynamodb::{
 
 use crate::time_provider::TimeProvider;
 use crate::objects::{OnetimeDownloaderConfig, OnetimeFile, OnetimeLink, OnetimeStorage};
+use super::util::{try_from_vec};
 
 
 const DEFAULT_TABLE_FILES: &'static str = "Onetime.Files";
@@ -45,7 +46,7 @@ const FIELD_IP_ADDRESS: &'static str = "IpAddress";
 
 
 #[derive(Clone)]
-pub struct DynamodbStorage {
+pub struct Storage {
     time_provider: Box<dyn TimeProvider>,
     files_table: String,
     links_table: String,
@@ -82,8 +83,11 @@ impl DdbAttributeValueExt for AttributeValue {
     }
 }
 
-trait DdbAttributesExt {
+trait RowExt {
     fn new_key (key: String, val: String) -> Self;
+    fn filename_key (filename: String) -> Self;
+    fn token_key (token: String) -> Self;
+
     fn get_s (&self, field: &String) -> Result<String, String>;
     fn get_os (&self, field: &String) -> Result<Option<String>, String>;
     fn get_b (&self, field: &String) -> Result<Bytes, String>;
@@ -91,9 +95,9 @@ trait DdbAttributesExt {
     fn get_on (&self, field: &String) -> Result<Option<u64>, String>;
 }
 
-type DdbAttributes = HashMap<String, AttributeValue>;
+type Row = HashMap<String, AttributeValue>;
 
-impl DdbAttributesExt for DdbAttributes {
+impl RowExt for Row {
     fn new_key (key: String, val: String) -> Self {
         hashmap! {
             key => AttributeValue::from_s(val)
@@ -101,6 +105,14 @@ impl DdbAttributesExt for DdbAttributes {
 
         // let mut item = HashMap::new();
         // item.insert(key, AttributeValue::from_s(val));
+    }
+
+    fn filename_key (filename: String) -> Self {
+        Self::new_key(FIELD_FILENAME.to_string(), filename)
+    }
+
+    fn token_key (token: String) -> Self {
+        Self::new_key(FIELD_TOKEN.to_string(), token)
     }
 
     fn get_s (&self, field: &String) -> Result<String, String> {
@@ -144,15 +156,14 @@ impl DdbAttributesExt for DdbAttributes {
     }
 }
 
-
-impl TryFrom<DdbAttributes> for OnetimeFile {
+impl TryFrom<Row> for OnetimeFile {
     type Error = String;
 
-    fn try_from(attributes: DdbAttributes) -> Result<Self, Self::Error> {
-        let filename = attributes.get_s(&FIELD_FILENAME.to_string())?;
-        let contents = attributes.get_b(&FIELD_CONTENTS.to_string())?;
-        let created_at = attributes.get_n(&FIELD_CREATED_AT.to_string())?;
-        let updated_at = attributes.get_n(&FIELD_UPDATED_AT.to_string())?;
+    fn try_from(row: Row) -> Result<Self, Self::Error> {
+        let filename = row.get_s(&FIELD_FILENAME.to_string())?;
+        let contents = row.get_b(&FIELD_CONTENTS.to_string())?;
+        let created_at = row.get_n(&FIELD_CREATED_AT.to_string())?;
+        let updated_at = row.get_n(&FIELD_UPDATED_AT.to_string())?;
 
         Ok(Self {
             filename: filename,
@@ -163,15 +174,15 @@ impl TryFrom<DdbAttributes> for OnetimeFile {
     }
 }
 
-impl TryFrom<DdbAttributes> for OnetimeLink {
+impl TryFrom<Row> for OnetimeLink {
     type Error = String;
 
-    fn try_from(attributes: DdbAttributes) -> Result<Self, Self::Error> {
-        let token = attributes.get_s(&FIELD_TOKEN.to_string())?;
-        let filename = attributes.get_s(&FIELD_FILENAME.to_string())?;
-        let created_at = attributes.get_n(&FIELD_CREATED_AT.to_string())?;
-        let downloaded_at = attributes.get_on(&FIELD_DOWNLOADED_AT.to_string())?;
-        let ip_address = attributes.get_os(&FIELD_IP_ADDRESS.to_string())?;
+    fn try_from(row: Row) -> Result<Self, Self::Error> {
+        let token = row.get_s(&FIELD_TOKEN.to_string())?;
+        let filename = row.get_s(&FIELD_FILENAME.to_string())?;
+        let created_at = row.get_n(&FIELD_CREATED_AT.to_string())?;
+        let downloaded_at = row.get_on(&FIELD_DOWNLOADED_AT.to_string())?;
+        let ip_address = row.get_os(&FIELD_IP_ADDRESS.to_string())?;
 
         Ok(Self {
             token: token,
@@ -183,9 +194,9 @@ impl TryFrom<DdbAttributes> for OnetimeLink {
     }
 }
 
-impl DynamodbStorage {
-    pub fn from_env (time_provider: Box<dyn TimeProvider>) -> DynamodbStorage {
-        DynamodbStorage {
+impl Storage {
+    pub fn from_env (time_provider: Box<dyn TimeProvider>) -> Self {
+        Self {
             time_provider: time_provider,
             files_table: OnetimeDownloaderConfig::env_var_string("DDB_FILES_TABLE", String::from(DEFAULT_TABLE_FILES)),
             links_table: OnetimeDownloaderConfig::env_var_string("DDB_LINKS_TABLE", String::from(DEFAULT_TABLE_LINKS)),
@@ -193,43 +204,11 @@ impl DynamodbStorage {
             client: DynamoDbClient::new(Region::UsEast1),
         }
     }
-
-    fn collect_files (attributes_vec: Vec<DdbAttributes>) -> Result<Vec<OnetimeFile>, String>  {
-        let mut vec = Vec::new();
-        // https://stackoverflow.com/questions/34733811/what-is-the-difference-between-iter-and-into-iter
-        for attributes in attributes_vec.into_iter() {
-            match OnetimeFile::try_from(attributes) {
-                Err(why) => return Err(format!("Failed collecting files: {}", why)),
-                Ok(file) => vec.push(file),
-            }
-        }
-        Ok(vec)
-    }
-
-    fn collect_links (attributes_vec: Vec<DdbAttributes>) -> Result<Vec<OnetimeLink>, String>  {
-        let mut vec = Vec::new();
-        for attributes in attributes_vec.into_iter() {
-            // TODO: https://doc.rust-lang.org/reference/types/function-pointer.html -- maybe do collect_links and collect_files like this
-            match OnetimeLink::try_from(attributes) {
-                Err(why) => return Err(format!("Failed collecting links: {}", why)),
-                Ok(link) => vec.push(link),
-            }
-        }
-        Ok(vec)
-    }
-
-    fn filename_key (&self, filename: String) -> DdbAttributes {
-        DdbAttributes::new_key(FIELD_FILENAME.to_string(), filename)
-    }
-
-    fn token_key (&self, token: String) -> DdbAttributes {
-        DdbAttributes::new_key(FIELD_TOKEN.to_string(), token)
-    }
 }
 
 // https://github.com/dtolnay/async-trait#non-threadsafe-futures
 #[async_trait(?Send)]
-impl OnetimeStorage for DynamodbStorage {
+impl OnetimeStorage for Storage {
     async fn add_file (&self, file: OnetimeFile) -> Result<bool, String> {
         let item = hashmap! {
             FIELD_FILENAME.to_string() => AttributeValue::from_s(file.filename),
@@ -269,7 +248,7 @@ impl OnetimeStorage for DynamodbStorage {
             Err(why) => Err(format!("List files failed: {}", why.to_string())),
             Ok(output) => match output.items {
                 None => Err("No files found".to_string()),
-                Some(attributes_vec) => Self::collect_files(attributes_vec),
+                Some(rows) => try_from_vec(rows, "files"),
             }
         }
     }
@@ -278,7 +257,7 @@ impl OnetimeStorage for DynamodbStorage {
         // https://www.rusoto.org/futures.html has example uses
         // ... maybe use https://docs.rs/crate/serde_dynamodb/0.6.0 ?
         let request = GetItemInput {
-            key: self.filename_key(filename),
+            key: Row::filename_key(filename),
             table_name: self.files_table.clone(),
             ..Default::default()
         };
@@ -287,7 +266,7 @@ impl OnetimeStorage for DynamodbStorage {
             Err(why) => Err(format!("Get file failed: {}", why.to_string())),
             Ok(output) => match output.item {
                 None => Err("File not found".to_string()),
-                Some(attributes) => OnetimeFile::try_from(attributes),
+                Some(row) => OnetimeFile::try_from(row),
             }
         }
     }
@@ -346,7 +325,7 @@ impl OnetimeStorage for DynamodbStorage {
             Err(why) => Err(format!("List links failed: {}", why.to_string())),
             Ok(output) => match output.items {
                 None => Err("No links found".to_string()),
-                Some(attributes_vec) => Self::collect_links(attributes_vec),
+                Some(rows) => try_from_vec(rows, "links"),
             }
         }
     }
@@ -358,7 +337,7 @@ impl OnetimeStorage for DynamodbStorage {
         // https://www.rusoto.org/futures.html has example uses
         // ... maybe use https://docs.rs/crate/serde_dynamodb/0.6.0 ?
         let request = GetItemInput {
-            key: self.token_key(token),
+            key: Row::token_key(token),
             table_name: self.links_table.clone(),
             ..Default::default()
         };
@@ -367,7 +346,7 @@ impl OnetimeStorage for DynamodbStorage {
             Err(why) => Err(format!("Get link failed: {}", why.to_string())),
             Ok(output) => match output.item {
                 None => Err("Link not found".to_string()),
-                Some(attributes) => OnetimeLink::try_from(attributes),
+                Some(row) => OnetimeLink::try_from(row),
             }
         }
     }
@@ -397,7 +376,7 @@ impl OnetimeStorage for DynamodbStorage {
             Err(why) => Err(format!("Mark downloaded put failed: {}", why.to_string())),
             Ok(output) => match output.attributes {
                 None => Ok(false),
-                Some(attributes) => match OnetimeLink::try_from(attributes) {
+                Some(row) => match OnetimeLink::try_from(row) {
                     Err(why) => Err(format!("Mark downloaded build failed: {}", why.to_string())),
                     Ok(link) => Ok(link.downloaded_at.is_some()),
                 },

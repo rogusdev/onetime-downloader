@@ -10,7 +10,7 @@ use actix_web::{web, App, HttpServer};
 
 use crate::time_provider::{SystemTimeProvider, TimeProvider};
 use crate::objects::{OnetimeDownloaderConfig, OnetimeDownloaderService, OnetimeStorage};
-use crate::storage::dynamodb::DynamodbStorage;
+use crate::storage::{dynamodb};
 use crate::handlers::{list_files, list_links, add_file, add_link, download_link, not_found};
 
 
@@ -113,7 +113,7 @@ fn build_service () -> OnetimeDownloaderService {
     println!("config {:?}", config);
 
     // TODO: what I want is to have a single instance get passed as traits (interfaces) that can be swapped out by config
-    let storage: Box<dyn OnetimeStorage> = Box::new(DynamodbStorage::from_env(time_provider.clone()));
+    let storage: Box<dyn OnetimeStorage> = Box::new(dynamodb::Storage::from_env(time_provider.clone()));
 
     OnetimeDownloaderService {
         time_provider: time_provider,
