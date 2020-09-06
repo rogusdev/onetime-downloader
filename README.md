@@ -14,7 +14,7 @@ Generate onetime download links for files stored in some kind of (cloud based?) 
 - [ ] dockerfile to run ^
 
 - [ ] rate limiting by IP that increases as more limits get triggered
-- [ ] support storage provider: dynamodb
+- [x] support storage provider: dynamodb
 - [ ] support storage provider: postgres
 - [ ] support storage provider: redis
 - [ ] support storage provider: mongo

@@ -11,6 +11,7 @@ use crate::time_provider::TimeProvider;
 
 #[derive(Debug, Clone)]
 pub struct OnetimeDownloaderConfig {
+    pub provider: String,
     pub api_key_files: String,
     pub api_key_links: String,
     pub max_len_file: usize,
@@ -35,6 +36,7 @@ impl OnetimeDownloaderConfig {
 
     pub fn from_env () -> OnetimeDownloaderConfig {
         OnetimeDownloaderConfig {
+            provider: Self::env_var_string("ONETIME_PROVIDER", Self::EMPTY_STRING),
             api_key_files: Self::env_var_string("FILES_API_KEY", Self::EMPTY_STRING),
             api_key_links: Self::env_var_string("LINKS_API_KEY", Self::EMPTY_STRING),
             max_len_file: Self::env_var_parse("FILE_MAX_LEN", Self::DEFAULT_MAX_LEN_FILE),

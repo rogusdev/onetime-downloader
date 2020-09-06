@@ -10,12 +10,9 @@ use actix_web::{web, App, HttpServer};
 
 use crate::time_provider::{SystemTimeProvider, TimeProvider};
 use crate::objects::{OnetimeDownloaderConfig, OnetimeDownloaderService, OnetimeStorage};
-use crate::storage::{dynamodb};
+use crate::storage::{dynamodb, invalid};//postgres
 use crate::handlers::{list_files, list_links, add_file, add_link, download_link, not_found};
 
-
-// postgres mapping: https://github.com/Dowwie/tokio-postgres-mapper
-// actix example using postgres: https://github.com/actix/examples/tree/master/async_pg
 
 // consider mongo support: https://lib.rs/crates/mongodb
 
@@ -112,8 +109,12 @@ fn build_service () -> OnetimeDownloaderService {
     let config = OnetimeDownloaderConfig::from_env();
     println!("config {:?}", config);
 
-    // TODO: what I want is to have a single instance get passed as traits (interfaces) that can be swapped out by config
-    let storage: Box<dyn OnetimeStorage> = Box::new(dynamodb::Storage::from_env(time_provider.clone()));
+    // https://stackoverflow.com/questions/25383488/how-to-match-a-string-against-string-literals-in-rust
+    let storage: Box<dyn OnetimeStorage> = match config.provider.as_str() {
+        "dynamodb" => Box::new(dynamodb::Storage::from_env(time_provider.clone())),
+//        "postgres" => Box::new(postgres::Storage::from_env(time_provider.clone())?),
+        _ => Box::new(invalid::Storage { error: format!("Invalid or no storage provider given! '{}'", config.provider) })
+    };
 
     OnetimeDownloaderService {
         time_provider: time_provider,
