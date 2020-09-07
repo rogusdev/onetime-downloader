@@ -9,6 +9,8 @@ use dyn_clonable::clonable;
 use crate::time_provider::TimeProvider;
 
 
+pub type MyError = String;
+
 #[derive(Debug, Clone)]
 pub struct OnetimeDownloaderConfig {
     pub provider: String,
@@ -89,13 +91,13 @@ pub struct CreateLink {
 #[async_trait(?Send)]
 #[clonable]
 pub trait OnetimeStorage : Clone {
-    async fn add_file (&self, file: OnetimeFile) -> Result<bool, String>;
-    async fn list_files (&self) -> Result<Vec<OnetimeFile>, String>;
-    async fn get_file (&self, filename: String) -> Result<OnetimeFile, String>;
-    async fn add_link (&self, link: OnetimeLink) -> Result<bool, String>;
-    async fn list_links (&self) -> Result<Vec<OnetimeLink>, String>;
-    async fn get_link (&self, token: String) -> Result<OnetimeLink, String>;
-    async fn mark_downloaded (&self, link: OnetimeLink, ip_address: String, downloaded_at: i64) -> Result<bool, String>;
+    async fn add_file (&self, file: OnetimeFile) -> Result<bool, MyError>;
+    async fn list_files (&self) -> Result<Vec<OnetimeFile>, MyError>;
+    async fn get_file (&self, filename: String) -> Result<OnetimeFile, MyError>;
+    async fn add_link (&self, link: OnetimeLink) -> Result<bool, MyError>;
+    async fn list_links (&self) -> Result<Vec<OnetimeLink>, MyError>;
+    async fn get_link (&self, token: String) -> Result<OnetimeLink, MyError>;
+    async fn mark_downloaded (&self, link: OnetimeLink, ip_address: String, downloaded_at: i64) -> Result<bool, MyError>;
 }
 
 #[derive(Clone)]

@@ -28,7 +28,7 @@ use rusoto_dynamodb::{
 };
 
 use crate::time_provider::TimeProvider;
-use crate::models::{OnetimeDownloaderConfig, OnetimeFile, OnetimeLink, OnetimeStorage};
+use crate::models::{MyError, OnetimeDownloaderConfig, OnetimeFile, OnetimeLink, OnetimeStorage};
 use super::util::{try_from_vec};
 
 
@@ -88,11 +88,11 @@ trait RowExt {
     fn filename_key (filename: String) -> Self;
     fn token_key (token: String) -> Self;
 
-    fn get_s (&self, field: &String) -> Result<String, String>;
-    fn get_os (&self, field: &String) -> Result<Option<String>, String>;
-    fn get_b (&self, field: &String) -> Result<Bytes, String>;
-    fn get_n (&self, field: &String) -> Result<i64, String>;
-    fn get_on (&self, field: &String) -> Result<Option<i64>, String>;
+    fn get_s (&self, field: &String) -> Result<String, MyError>;
+    fn get_os (&self, field: &String) -> Result<Option<String>, MyError>;
+    fn get_b (&self, field: &String) -> Result<Bytes, MyError>;
+    fn get_n (&self, field: &String) -> Result<i64, MyError>;
+    fn get_on (&self, field: &String) -> Result<Option<i64>, MyError>;
 }
 
 type Row = HashMap<String, AttributeValue>;
@@ -115,7 +115,7 @@ impl RowExt for Row {
         Self::new_key(FIELD_TOKEN.to_string(), token)
     }
 
-    fn get_s (&self, field: &String) -> Result<String, String> {
+    fn get_s (&self, field: &String) -> Result<String, MyError> {
         // clone because get returns Option<&V> (not Option<V>)
         //  and thus without clone, this attempts a move out of that (that fails to compile)
         //  https://doc.rust-lang.org/beta/std/collections/struct.HashMap.html#method.get
@@ -123,26 +123,26 @@ impl RowExt for Row {
             .s.ok_or(format!("Empty field {}", field))
     }
 
-    fn get_os (&self, field: &String) -> Result<Option<String>, String> {
+    fn get_os (&self, field: &String) -> Result<Option<String>, MyError> {
         match self.get(field) {
             None => Ok(None),
             Some(val) => val.s.clone().ok_or(format!("Empty field {}", field)).map(|s| Some(s))
         }
     }
 
-    fn get_b (&self, field: &String) -> Result<Bytes, String> {
+    fn get_b (&self, field: &String) -> Result<Bytes, MyError> {
         self.get(field).ok_or(format!("Missing field {}", field))?.clone()
             .b.ok_or(format!("Empty field {}", field))
             .map(|s| Bytes::from(s))
     }
 
-    fn get_n (&self, field: &String) -> Result<i64, String> {
+    fn get_n (&self, field: &String) -> Result<i64, MyError> {
         self.get(field).ok_or(format!("Missing field {}", field))?.clone()
             .n.ok_or(format!("Empty field {}", field))?
             .parse::<i64>().map_err(|why| format!("Field {} is not a number {}", field, why))
     }
 
-    fn get_on (&self, field: &String) -> Result<Option<i64>, String> {
+    fn get_on (&self, field: &String) -> Result<Option<i64>, MyError> {
         match self.get(field) {
             None => Ok(None),
             Some(val) => match val.n.clone() {
@@ -157,7 +157,7 @@ impl RowExt for Row {
 }
 
 impl TryFrom<Row> for OnetimeFile {
-    type Error = String;
+    type Error = MyError;
 
     fn try_from(row: Row) -> Result<Self, Self::Error> {
         let filename = row.get_s(&FIELD_FILENAME.to_string())?;
@@ -175,7 +175,7 @@ impl TryFrom<Row> for OnetimeFile {
 }
 
 impl TryFrom<Row> for OnetimeLink {
-    type Error = String;
+    type Error = MyError;
 
     fn try_from(row: Row) -> Result<Self, Self::Error> {
         let token = row.get_s(&FIELD_TOKEN.to_string())?;
@@ -209,7 +209,7 @@ impl Storage {
 // https://github.com/dtolnay/async-trait#non-threadsafe-futures
 #[async_trait(?Send)]
 impl OnetimeStorage for Storage {
-    async fn add_file (&self, file: OnetimeFile) -> Result<bool, String> {
+    async fn add_file (&self, file: OnetimeFile) -> Result<bool, MyError> {
         let item = hashmap! {
             FIELD_FILENAME.to_string() => AttributeValue::from_s(file.filename),
             FIELD_CONTENTS.to_string() => AttributeValue::from_b(file.contents),
@@ -229,7 +229,7 @@ impl OnetimeStorage for Storage {
         }
     }
 
-    async fn list_files (&self) -> Result<Vec<OnetimeFile>, String>  {
+    async fn list_files (&self) -> Result<Vec<OnetimeFile>, MyError>  {
         let projection_expression = [
             FIELD_FILENAME,
             FIELD_CONTENTS,
@@ -253,7 +253,7 @@ impl OnetimeStorage for Storage {
         }
     }
 
-    async fn get_file (&self, filename: String) -> Result<OnetimeFile, String>  {
+    async fn get_file (&self, filename: String) -> Result<OnetimeFile, MyError>  {
         // https://www.rusoto.org/futures.html has example uses
         // ... maybe use https://docs.rs/crate/serde_dynamodb/0.6.0 ?
         let request = GetItemInput {
@@ -271,7 +271,7 @@ impl OnetimeStorage for Storage {
         }
     }
 
-    async fn add_link (&self, link: OnetimeLink) -> Result<bool, String> {
+    async fn add_link (&self, link: OnetimeLink) -> Result<bool, MyError> {
         let mut item = hashmap! {
             FIELD_TOKEN.to_string() => AttributeValue::from_s(link.token),
             FIELD_FILENAME.to_string() => AttributeValue::from_s(link.filename),
@@ -298,7 +298,7 @@ impl OnetimeStorage for Storage {
         }
     }
 
-    async fn list_links (&self) -> Result<Vec<OnetimeLink>, String> {
+    async fn list_links (&self) -> Result<Vec<OnetimeLink>, MyError> {
         const TOKEN_SUBSTITUTE: &'static str = "#Token";
 
         let expression_attribute_names = hashmap! {
@@ -330,10 +330,7 @@ impl OnetimeStorage for Storage {
         }
     }
 
-    async fn get_link (
-        &self,
-        token: String,
-    ) -> Result<OnetimeLink, String> {
+    async fn get_link (&self, token: String) -> Result<OnetimeLink, MyError> {
         // https://www.rusoto.org/futures.html has example uses
         // ... maybe use https://docs.rs/crate/serde_dynamodb/0.6.0 ?
         let request = GetItemInput {
@@ -351,12 +348,7 @@ impl OnetimeStorage for Storage {
         }
     }
 
-    async fn mark_downloaded (
-        &self,
-        link: OnetimeLink,
-        ip_address: String,
-        downloaded_at: i64
-    ) -> Result<bool, String> {
+    async fn mark_downloaded (&self, link: OnetimeLink, ip_address: String, downloaded_at: i64) -> Result<bool, MyError> {
         let item = hashmap! {
             FIELD_TOKEN.to_string() => AttributeValue::from_s(link.token),
             FIELD_FILENAME.to_string() => AttributeValue::from_s(link.filename),
