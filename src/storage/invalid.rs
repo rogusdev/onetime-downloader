@@ -1,7 +1,7 @@
 
 use async_trait::async_trait;
 
-use crate::objects::{OnetimeFile, OnetimeLink, OnetimeStorage};
+use crate::models::{OnetimeFile, OnetimeLink, OnetimeStorage};
 
 
 #[derive(Clone)]
@@ -36,7 +36,7 @@ impl OnetimeStorage for Storage {
         Err(self.error.clone())
     }
 
-    async fn mark_downloaded (&self, _link: OnetimeLink, _ip_address: String, _downloaded_at: u64) -> Result<bool, String> {
+    async fn mark_downloaded (&self, _link: OnetimeLink, _ip_address: String, _downloaded_at: i64) -> Result<bool, String> {
         Err(self.error.clone())
     }
 }

@@ -13,7 +13,7 @@ use dyn_clonable::clonable;
 // https://stackoverflow.com/questions/50017987/cant-clone-vecboxtrait-because-trait-cannot-be-made-into-an-object
 #[clonable]
 pub trait TimeProvider : Clone {
-    fn unix_ts_ms (&self) -> u64;
+    fn unix_ts_ms (&self) -> i64;
 }
 
 #[derive(Debug, Clone)]
@@ -21,29 +21,29 @@ pub struct SystemTimeProvider {
 }
 
 impl TimeProvider for SystemTimeProvider {
-    fn unix_ts_ms (&self) -> u64 {
+    fn unix_ts_ms (&self) -> i64 {
         let dur = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("Time went backwards");
 
-        (dur.as_secs() * 1_000) + dur.subsec_millis() as u64
+        ((dur.as_secs() * 1_000) + dur.subsec_millis() as u64) as i64
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct FixedTimeProvider {
-    fixed_unix_ts_ms: u64,
+    fixed_unix_ts_ms: i64,
 }
 
 impl FixedTimeProvider {
     #[allow(dead_code)]
-    pub fn set_fixed_unix_ts_ms (&mut self, new_unix_ts_ms: u64) {
+    pub fn set_fixed_unix_ts_ms (&mut self, new_unix_ts_ms: i64) {
         self.fixed_unix_ts_ms = new_unix_ts_ms;
     }
 }
 
 impl TimeProvider for FixedTimeProvider {
-    fn unix_ts_ms (&self) -> u64 {
+    fn unix_ts_ms (&self) -> i64 {
         self.fixed_unix_ts_ms
     }
 }

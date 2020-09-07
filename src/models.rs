@@ -34,6 +34,8 @@ impl OnetimeDownloaderConfig {
         }
     }
 
+    // maybe TODO? https://github.com/actix/examples/blob/ec6e14aacc10bf4d44309ddb73fe01f9c27faf6f/async_pg/src/main.rs#L10
+    // seems very ubiquitous: https://crates.io/crates/config
     pub fn from_env () -> OnetimeDownloaderConfig {
         OnetimeDownloaderConfig {
             provider: Self::env_var_string("ONETIME_PROVIDER", Self::EMPTY_STRING),
@@ -49,8 +51,8 @@ impl OnetimeDownloaderConfig {
 pub struct OnetimeFile {
     pub filename: String,
     pub contents: Bytes,
-    pub created_at: u64,
-    pub updated_at: u64,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 // https://serde.rs/impl-serialize.html
@@ -73,8 +75,8 @@ impl Serialize for OnetimeFile {
 pub struct OnetimeLink {
     pub token: String,
     pub filename: String,
-    pub created_at: u64,
-    pub downloaded_at: Option<u64>,
+    pub created_at: i64,
+    pub downloaded_at: Option<i64>,
     pub ip_address: Option<String>,
 }
 
@@ -93,7 +95,7 @@ pub trait OnetimeStorage : Clone {
     async fn add_link (&self, link: OnetimeLink) -> Result<bool, String>;
     async fn list_links (&self) -> Result<Vec<OnetimeLink>, String>;
     async fn get_link (&self, token: String) -> Result<OnetimeLink, String>;
-    async fn mark_downloaded (&self, link: OnetimeLink, ip_address: String, downloaded_at: u64) -> Result<bool, String>;
+    async fn mark_downloaded (&self, link: OnetimeLink, ip_address: String, downloaded_at: i64) -> Result<bool, String>;
 }
 
 #[derive(Clone)]

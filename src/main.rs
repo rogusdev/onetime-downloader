@@ -1,7 +1,7 @@
 
 // https://stackoverflow.com/questions/56714619/including-a-file-from-another-that-is-not-main-rs-nor-lib-rs
 mod time_provider;
-mod objects;
+mod models;
 mod storage;
 mod handlers;
 
@@ -9,8 +9,8 @@ use dotenv::dotenv;
 use actix_web::{web, App, HttpServer};
 
 use crate::time_provider::{SystemTimeProvider, TimeProvider};
-use crate::objects::{OnetimeDownloaderConfig, OnetimeDownloaderService, OnetimeStorage};
-use crate::storage::{dynamodb, invalid};//postgres
+use crate::models::{OnetimeDownloaderConfig, OnetimeDownloaderService, OnetimeStorage};
+use crate::storage::{dynamodb, invalid};//, postgres
 use crate::handlers::{list_files, list_links, add_file, add_link, download_link, not_found};
 
 
@@ -112,7 +112,10 @@ fn build_service () -> OnetimeDownloaderService {
     // https://stackoverflow.com/questions/25383488/how-to-match-a-string-against-string-literals-in-rust
     let storage: Box<dyn OnetimeStorage> = match config.provider.as_str() {
         "dynamodb" => Box::new(dynamodb::Storage::from_env(time_provider.clone())),
-//        "postgres" => Box::new(postgres::Storage::from_env(time_provider.clone())?),
+        // "postgres" => match postgres::Storage::from_env(time_provider.clone()) {
+        //     Err(why) => Box::new(invalid::Storage { error: format!("Invalid postgres storage provider! {}", why) }),
+        //     Ok(storage) => Box::new(storage),
+        // },
         _ => Box::new(invalid::Storage { error: format!("Invalid or no storage provider given! '{}'", config.provider) })
     };
 

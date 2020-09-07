@@ -28,7 +28,7 @@ use rusoto_dynamodb::{
 };
 
 use crate::time_provider::TimeProvider;
-use crate::objects::{OnetimeDownloaderConfig, OnetimeFile, OnetimeLink, OnetimeStorage};
+use crate::models::{OnetimeDownloaderConfig, OnetimeFile, OnetimeLink, OnetimeStorage};
 use super::util::{try_from_vec};
 
 
@@ -56,7 +56,7 @@ pub struct Storage {
 // http://xion.io/post/code/rust-extension-traits.html
 trait DdbAttributeValueExt {
     fn from_s (val: String) -> AttributeValue;
-    fn from_n (val: u64) -> AttributeValue;
+    fn from_n (val: i64) -> AttributeValue;
     fn from_b (val: Bytes) -> AttributeValue;
 }
 
@@ -68,7 +68,7 @@ impl DdbAttributeValueExt for AttributeValue {
         }
     }
 
-    fn from_n (val: u64) -> AttributeValue {
+    fn from_n (val: i64) -> AttributeValue {
         AttributeValue {
             n: Some(val.to_string()),
             ..Default::default()
@@ -91,8 +91,8 @@ trait RowExt {
     fn get_s (&self, field: &String) -> Result<String, String>;
     fn get_os (&self, field: &String) -> Result<Option<String>, String>;
     fn get_b (&self, field: &String) -> Result<Bytes, String>;
-    fn get_n (&self, field: &String) -> Result<u64, String>;
-    fn get_on (&self, field: &String) -> Result<Option<u64>, String>;
+    fn get_n (&self, field: &String) -> Result<i64, String>;
+    fn get_on (&self, field: &String) -> Result<Option<i64>, String>;
 }
 
 type Row = HashMap<String, AttributeValue>;
@@ -136,18 +136,18 @@ impl RowExt for Row {
             .map(|s| Bytes::from(s))
     }
 
-    fn get_n (&self, field: &String) -> Result<u64, String> {
+    fn get_n (&self, field: &String) -> Result<i64, String> {
         self.get(field).ok_or(format!("Missing field {}", field))?.clone()
             .n.ok_or(format!("Empty field {}", field))?
-            .parse::<u64>().map_err(|why| format!("Field {} is not a number {}", field, why))
+            .parse::<i64>().map_err(|why| format!("Field {} is not a number {}", field, why))
     }
 
-    fn get_on (&self, field: &String) -> Result<Option<u64>, String> {
+    fn get_on (&self, field: &String) -> Result<Option<i64>, String> {
         match self.get(field) {
             None => Ok(None),
             Some(val) => match val.n.clone() {
                 None => Err(format!("Empty field {}", field)),
-                Some(val) => match val.parse::<u64>() {
+                Some(val) => match val.parse::<i64>() {
                     Err(why) => Err(format!("Field {} is not a number {}", field, why)),
                     Ok(val) => Ok(Some(val)),
                 }
@@ -355,7 +355,7 @@ impl OnetimeStorage for Storage {
         &self,
         link: OnetimeLink,
         ip_address: String,
-        downloaded_at: u64
+        downloaded_at: i64
     ) -> Result<bool, String> {
         let item = hashmap! {
             FIELD_TOKEN.to_string() => AttributeValue::from_s(link.token),
