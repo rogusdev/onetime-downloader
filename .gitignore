@@ -13,3 +13,8 @@ Cargo.lock
 #Added by cargo
 
 /target
+
+.DS_Store
+.idea
+.vagrant
+.vscode

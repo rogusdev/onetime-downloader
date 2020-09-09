@@ -1,0 +1,12 @@
+.DS_Store
+.dockerignore
+.env
+.git
+.gitignore
+.idea
+.vagrant
+.vs
+.vscode
+docker-compose.yml
+Dockerfile
+target

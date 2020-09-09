@@ -283,14 +283,12 @@ impl OnetimeStorage for Storage {
         if let Some(ip_address) = link.ip_address {
             item.insert(FIELD_IP_ADDRESS.to_string(), AttributeValue::from_s(ip_address));
         }
-        // print!("add link item {:?}", item);
 
         let request = PutItemInput {
             item: item,
             table_name: self.links_table.clone(),
             ..Default::default()
         };
-        // print!("add link request {:?}", request);
 
         match self.client.put_item(request).await {
             Err(why) => Err(format!("Add link failed: {}", why.to_string())),
