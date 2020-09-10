@@ -62,7 +62,9 @@ async fn main () -> std::io::Result<()> {
                 web::route().to(not_found)
             )
     })
-    .bind("127.0.0.1:8080")?
+    // https://stackoverflow.com/questions/57177889/rust-actix-web-inside-docker-isnt-attainable-why/60361941#60361941
+    // https://turreta.com/2020/07/03/deploy-actix-web-in-docker-container/
+    .bind("0.0.0.0:8080")?
     .run()
     .await
 }

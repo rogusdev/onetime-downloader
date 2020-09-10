@@ -36,7 +36,7 @@ docker rm -f onetime-downloader
 docker build -t onetime-downloader .
 docker run --env-file .env -e PG_HOST=postgres-www -p 8080:8080 --network=www --name onetime-downloader onetime-downloader
 
-docker run -d --restart=always --env-file .env --network=www -l 'caddy'='downloads.chrisrogus.com' -l 'caddy.reverse_proxy'='\$CONTAINER_IP:8080' --name onetime-downloader onetime-downloader"
+docker run -d --restart=always --env-file .env -e PG_HOST=postgres-www --network=www -l 'caddy'='downloads.chrisrogus.com' -l 'caddy.reverse_proxy'='\$CONTAINER_IP:8080' --name onetime-downloader onetime-downloader
 
 docker exec -it onetime-downloader bash
 ```
