@@ -12,9 +12,11 @@ Generate onetime download links for files stored in some kind of (cloud based?) 
 - [x] separate out modules into files and maybe folders (storage providers)
 - [ ] unit tests for ^
 - [x] dockerfile to run ^
-- [ ] download header specifies filename!
+- [x] download header specifies filename!
 - [ ] `expires_at` with default from env and optional override per link -- maybe default (for link) per file too?
-- [ ] read filename from file, override with provided filename only if present
+- [x] read filename from file, override with provided filename only if present
+- [x] update file if a new version is uploaded
+- [ ] delete files + links
 - [ ] JSON error responses when things go wrong
 - [ ] use `e.into()` for converting errors into `MyError`
 - [ ] react UI to manage list of files + links, etc

@@ -118,13 +118,18 @@ impl OnetimeStorage for Storage {
     async fn add_file (&self, file: OnetimeFile) -> Result<bool, MyError> {
         match self.client().await?.execute(
             format!(
-                "INSERT INTO {}.{} ({}, {}, {}, {}) VALUES ($1, $2, $3, $4)",
+                "INSERT INTO {}.{} ({}, {}, {}, {}) VALUES ($1, $2, $3, $4)
+                    ON CONFLICT ({}) DO UPDATE SET {}=$4, {}=$2",
                 self.schema,
                 self.files_table,
                 FIELD_FILENAME,
                 FIELD_CONTENTS,
                 FIELD_CREATED_AT,
                 FIELD_UPDATED_AT,
+
+                FIELD_FILENAME,
+                FIELD_UPDATED_AT,
+                FIELD_CONTENTS,
             ).as_str(),
             &[
                 &file.filename,

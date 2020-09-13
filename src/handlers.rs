@@ -85,7 +85,8 @@ pub async fn add_file (
     check_api_key(&req, service.config.api_key_files.as_str())?;
     check_rate_limit(&req)?;
 
-    let mut filename: Option<String> = None;
+    let mut file_filename: Option<String> = None;
+    let mut field_filename: Option<String> = None;
     let mut contents: Option<Bytes> = None;
 
     while let Ok(Some(field)) = payload.try_next().await {
@@ -99,23 +100,25 @@ pub async fn add_file (
                     let val = collect_chunks(field, service.config.max_len_file).await?;
                     println!("file:\n{:?}", val);
                     contents = Some(Bytes::from(val));
+                    file_filename = Some(filename.to_string());
                 }
             }
             None => {
                 println!("'{}' not a file!", field_name);
                 if field_name == "filename" {
                     let val = collect_chunks(field, service.config.max_len_value).await?;
-                    filename = Some(String::from_utf8(val).unwrap());
+                    field_filename = Some(String::from_utf8(val).unwrap());
                 }
             }
         }
     }
 
-    if filename.is_some() && contents.is_some() {
+    if (field_filename.is_some() || file_filename.is_some()) && contents.is_some() {
         let now = service.time_provider.unix_ts_ms();
+        let filename = field_filename.unwrap_or_else(|| file_filename.unwrap());
 
         let file = OnetimeFile {
-            filename: filename.unwrap(),
+            filename: filename,
             contents: contents.unwrap(),
             created_at: now,
             updated_at: now,
