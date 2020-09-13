@@ -3,7 +3,7 @@ use rand::Rng;
 use bytes::{Bytes};
 // https://actix.rs/
 // very fast framework: https://www.techempower.com/benchmarks/#section=data-r19
-use actix_web::{web, HttpRequest, HttpResponse};
+use actix_web::{web, HttpRequest, HttpResponse, http::header};
 use actix_multipart::{Field, Multipart};
 use futures::{StreamExt, TryStreamExt}; // adds... something for multipart processsing
 
@@ -205,6 +205,8 @@ pub async fn download_link (
     }
 
     let not_found_contents = format!("Could not find contents for filename {}", filename);
+    let content_disposition = format!("inline; filename=\"{}\"", filename);
+
     let contents = match service.storage.get_file(filename).await {
         Ok(file) => file.contents,
         Err(why) => return HttpResponse::NotFound().body(
@@ -215,6 +217,8 @@ pub async fn download_link (
     // https://github.com/actix/examples/blob/master/basics/src/main.rs
     HttpResponse::Ok()
         .content_type("application/octet-stream")
+        // https://actix.rs/actix-web/actix_web/dev/struct.HttpResponseBuilder.html#method.set_header
+        .set_header(header::CONTENT_DISPOSITION, content_disposition)
         .body(contents)
 }
 

@@ -12,7 +12,15 @@ Generate onetime download links for files stored in some kind of (cloud based?) 
 - [x] separate out modules into files and maybe folders (storage providers)
 - [ ] unit tests for ^
 - [x] dockerfile to run ^
+- [ ] download header specifies filename!
+- [ ] `expires_at` with default from env and optional override per link -- maybe default (for link) per file too?
+- [ ] read filename from file, override with provided filename only if present
 - [ ] JSON error responses when things go wrong
+- [ ] use `e.into()` for converting errors into `MyError`
+- [ ] react UI to manage list of files + links, etc
+- [ ] google sso to login for managing list -- remove api keys?...
+- [ ] audit trail of what actions taken by which users in ui
+- [ ] setup 3 subdomains: 1 for downloads, 1 for ui, 1 for api
 
 - [ ] rate limiting by IP that increases as more limits get triggered
 - [x] support storage provider: dynamodb
@@ -36,7 +44,7 @@ docker rm -f onetime-downloader
 docker build -t onetime-downloader .
 docker run --env-file .env -e PG_HOST=postgres-www -p 8080:8080 --network=www --name onetime-downloader onetime-downloader
 
-docker run -d --restart=always --env-file .env -e PG_HOST=postgres-www --network=www -l 'caddy'='downloads.chrisrogus.com' -l 'caddy.reverse_proxy'='\$CONTAINER_IP:8080' --name onetime-downloader onetime-downloader
+docker run -d --restart=always --env-file .env -e PG_HOST=postgres-www -e FILE_MAX_LEN=4000000 --network=www -l 'caddy'='downloads.chrisrogus.com' -l 'caddy.reverse_proxy'='$CONTAINER_IP:8080' --name onetime-downloader onetime-downloader
 
 docker exec -it onetime-downloader bash
 ```
