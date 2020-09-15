@@ -24,7 +24,8 @@ use rusoto_dynamodb::{
     AttributeValue,
     GetItemInput,
     PutItemInput,
-    ScanInput
+    ScanInput,
+    DeleteItemInput,
 };
 
 use crate::time_provider::TimeProvider;
@@ -371,6 +372,32 @@ impl OnetimeStorage for Storage {
                     Ok(link) => Ok(link.downloaded_at.is_some()),
                 },
             }
+        }
+    }
+
+    async fn delete_file(&self, filename: String) -> Result<bool, MyError> {
+        let request = DeleteItemInput {
+            key: Row::filename_key(filename),
+            table_name: self.files_table.clone(),
+            ..Default::default()
+        };
+
+        match self.client.delete_item(request).await {
+            Err(why) => Err(format!("Delete file failed: {}", why.to_string())),
+            Ok(output) => Ok(true),
+        }
+    }
+
+    async fn delete_link(&self, token: String) -> Result<bool, MyError> {
+        let request = DeleteItemInput {
+            key: Row::token_key(token),
+            table_name: self.links_table.clone(),
+            ..Default::default()
+        };
+
+        match self.client.delete_item(request).await {
+            Err(why) => Err(format!("Delete link failed: {}", why.to_string())),
+            Ok(output) => Ok(true),
         }
     }
 }

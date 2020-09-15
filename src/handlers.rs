@@ -45,7 +45,7 @@ pub async fn list_files (
 
     match service.storage.list_files().await {
         Ok(files) => Ok(web::Json(files)),
-        Err(why) => Err(HttpResponse::InternalServerError().body(format!("Something went wrong! {}", why))),
+        Err(why) => Err(HttpResponse::InternalServerError().body(format!("List files failed! {}", why))),
     }
 }
 
@@ -58,7 +58,7 @@ pub async fn list_links (
 
     match service.storage.list_links().await {
         Ok(links) => Ok(web::Json(links)),
-        Err(why) => Err(HttpResponse::InternalServerError().body(format!("Something went wrong! {}", why))),
+        Err(why) => Err(HttpResponse::InternalServerError().body(format!("List links failed! {}", why))),
     }
 }
 
@@ -126,7 +126,7 @@ pub async fn add_file (
 
         match service.storage.add_file(file).await {
             Ok(_) => Ok(HttpResponse::Ok().body("added file")),
-            Err(why) => Ok(HttpResponse::InternalServerError().body(format!("Something went wrong! {}", why))),
+            Err(why) => Ok(HttpResponse::InternalServerError().body(format!("Add file failed! {}", why))),
         }
     } else {
         Ok(HttpResponse::BadRequest().body("No filename or file contents provided!"))
@@ -166,17 +166,14 @@ pub async fn add_link (
                     .content_type("text/plain")
                     .body(url)
             ),
-            Err(why) => Err(HttpResponse::InternalServerError().body(format!("Something went wrong! {}", why))),
+            Err(why) => Err(HttpResponse::InternalServerError().body(format!("Add link failed! {}", why))),
         }
     } else {
         Err(HttpResponse::BadRequest().body("Invalid filename for link!"))
     }
 }
 
-pub async fn download_link (
-    req: HttpRequest,
-    service: web::Data<OnetimeDownloaderService>,
-) -> HttpResponse {
+pub async fn download_link (req: HttpRequest, service: web::Data<OnetimeDownloaderService>) -> HttpResponse {
     println!("download link");
     if let Err(badreq) = check_rate_limit(&req) {
         return badreq
@@ -201,7 +198,7 @@ pub async fn download_link (
     let now = service.time_provider.unix_ts_ms();
     let filename = link.filename.clone();
     match service.storage.mark_downloaded(link, ip_address, now).await {
-        Err(why) => return HttpResponse::InternalServerError().body(format!("Something went wrong! {}", why)),
+        Err(why) => return HttpResponse::InternalServerError().body(format!("Mark downloaded failed! {}", why)),
         Ok(already_downloaded) => if already_downloaded {
             return HttpResponse::NotFound().body("Already downloaded race");
         },
@@ -223,6 +220,32 @@ pub async fn download_link (
         // https://actix.rs/actix-web/actix_web/dev/struct.HttpResponseBuilder.html#method.set_header
         .set_header(header::CONTENT_DISPOSITION, content_disposition)
         .body(contents)
+}
+
+pub async fn delete_file (req: HttpRequest, service: web::Data<OnetimeDownloaderService>) -> HttpResponse {
+    println!("delete file");
+    if let Err(badreq) = check_rate_limit(&req) {
+        return badreq
+    }
+
+    let filename = req.match_info().get("filename").unwrap().to_string();
+    match service.storage.delete_file(filename).await {
+        Ok(_) => HttpResponse::Ok().body("File deleted"),
+        Err(why) => HttpResponse::InternalServerError().body(format!("Delete file failed! {}", why)),
+    }
+}
+
+pub async fn delete_link (req: HttpRequest, service: web::Data<OnetimeDownloaderService>) -> HttpResponse {
+    println!("delete link");
+    if let Err(badreq) = check_rate_limit(&req) {
+        return badreq
+    }
+
+    let token = req.match_info().get("token").unwrap().to_string();
+    match service.storage.delete_link(token).await {
+        Ok(_) => HttpResponse::Ok().body("Link deleted"),
+        Err(why) => HttpResponse::InternalServerError().body(format!("Delete link failed! {}", why)),
+    }
 }
 
 pub fn not_found () -> HttpResponse {

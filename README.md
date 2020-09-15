@@ -16,7 +16,7 @@ Generate onetime download links for files stored in some kind of (cloud based?) 
 - [ ] `expires_at` with default from env and optional override per link -- maybe default (for link) per file too?
 - [x] read filename from file, override with provided filename only if present
 - [x] update file if a new version is uploaded
-- [ ] delete files + links
+- [x] delete files + links
 - [ ] JSON error responses when things go wrong
 - [ ] use `e.into()` for converting errors into `MyError`
 - [ ] react UI to manage list of files + links, etc

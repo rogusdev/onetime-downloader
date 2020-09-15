@@ -11,7 +11,7 @@ use actix_web::{web, App, HttpServer};
 use crate::time_provider::{SystemTimeProvider, TimeProvider};
 use crate::models::{OnetimeDownloaderConfig, OnetimeDownloaderService, OnetimeStorage};
 use crate::storage::{dynamodb, invalid, postgres};
-use crate::handlers::{list_files, list_links, add_file, add_link, download_link, not_found};
+use crate::handlers::{list_files, list_links, add_file, add_link, download_link, not_found, delete_file, delete_link};
 
 
 fn build_service () -> OnetimeDownloaderService {
@@ -54,6 +54,8 @@ async fn main () -> std::io::Result<()> {
                     .route("links", web::get().to(list_links))
                     .route("files", web::post().to(add_file))
                     .route("links", web::post().to(add_link))
+                    .route("files/{filename}", web::delete().to(delete_file))
+                    .route("links/{token}", web::delete().to(delete_link))
             )
             .route("download/{token}", web::get().to(download_link))
             // https://github.com/actix/actix-website/blob/master/content/docs/url-dispatch.md

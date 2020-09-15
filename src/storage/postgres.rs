@@ -271,4 +271,38 @@ impl OnetimeStorage for Storage {
             Ok(update_count) => Ok(update_count == 0)
         }
     }
+
+    async fn delete_file(&self, filename: String) -> Result<bool, MyError> {
+        match self.client().await?.execute(
+            format!(
+                "DELETE FROM {}.{} WHERE {} = $1",
+                self.schema,
+                self.files_table,
+                FIELD_FILENAME,
+            ).as_str(),
+            &[
+                &filename,
+            ],
+        ).await {
+            Err(why) => Err(format!("Delete file failed: {}", why.to_string())),
+            Ok(update_count) => Ok(update_count == 0)
+        }
+    }
+
+    async fn delete_link(&self, token: String) -> Result<bool, MyError> {
+        match self.client().await?.execute(
+            format!(
+                "DELETE FROM {}.{} WHERE {} = $1",
+                self.schema,
+                self.links_table,
+                FIELD_TOKEN,
+            ).as_str(),
+            &[
+                &token,
+            ],
+        ).await {
+            Err(why) => Err(format!("Delete link failed: {}", why.to_string())),
+            Ok(update_count) => Ok(update_count == 0)
+        }
+    }
 }

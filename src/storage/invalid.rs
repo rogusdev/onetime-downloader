@@ -39,4 +39,12 @@ impl OnetimeStorage for Storage {
     async fn mark_downloaded (&self, _link: OnetimeLink, _ip_address: String, _downloaded_at: i64) -> Result<bool, MyError> {
         Err(self.error.clone())
     }
+
+    async fn delete_file (&self, _filename: String) -> Result<bool, MyError> {
+        Err(self.error.clone())
+    }
+
+    async fn delete_link (&self, _token: String) -> Result<bool, MyError> {
+        Err(self.error.clone())
+    }
 }

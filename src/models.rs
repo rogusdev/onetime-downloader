@@ -98,6 +98,8 @@ pub trait OnetimeStorage : Clone {
     async fn list_links (&self) -> Result<Vec<OnetimeLink>, MyError>;
     async fn get_link (&self, token: String) -> Result<OnetimeLink, MyError>;
     async fn mark_downloaded (&self, link: OnetimeLink, ip_address: String, downloaded_at: i64) -> Result<bool, MyError>;
+    async fn delete_file(&self, filename: String) -> Result<bool, MyError>;
+    async fn delete_link(&self, token: String) -> Result<bool, MyError>;
 }
 
 #[derive(Clone)]
