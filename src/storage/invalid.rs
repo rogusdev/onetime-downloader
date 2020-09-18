@@ -12,6 +12,10 @@ pub struct Storage {
 // https://github.com/dtolnay/async-trait#non-threadsafe-futures
 #[async_trait(?Send)]
 impl OnetimeStorage for Storage {
+    fn name(&self) -> &'static str {
+        "INVALID"
+    }
+
     async fn add_file (&self, _file: OnetimeFile) -> Result<bool, MyError> {
         Err(self.error.clone())
     }

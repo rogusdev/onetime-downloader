@@ -13,10 +13,11 @@ Generate onetime download links for files stored in some kind of (cloud based?) 
 - [ ] unit tests for ^
 - [x] dockerfile to run ^
 - [x] download header specifies filename!
-- [ ] `expires_at` with default from env and optional override per link -- maybe default (for link) per file too?
+- [x] `expires_at` with default from env and optional override per link -- maybe default (for link) per file too?
 - [x] read filename from file, override with provided filename only if present
 - [x] update file if a new version is uploaded
 - [x] delete files + links
+- [ ] zero copy in links/files from input? (&str not String)
 - [ ] JSON error responses when things go wrong
 - [ ] use `e.into()` for converting errors into `MyError`
 - [ ] react UI to manage list of files + links, etc
@@ -68,7 +69,9 @@ CREATE TABLE IF NOT EXISTS onetime.files (
 CREATE TABLE IF NOT EXISTS onetime.links (
     token TEXT NOT NULL PRIMARY KEY,
     filename TEXT NOT NULL,
+    note TEXT NULL,
     created_at BIGINT NOT NULL,
+    expires_at BIGINT NOT NULL,
     downloaded_at BIGINT,
     ip_address TEXT
 );

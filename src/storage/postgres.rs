@@ -27,6 +27,8 @@ const FIELD_CREATED_AT: &'static str = "created_at";
 const FIELD_UPDATED_AT: &'static str = "updated_at";
 
 const FIELD_TOKEN: &'static str = "token";
+const FIELD_NOTE: &'static str = "note";
+const FIELD_EXPIRES_AT: &'static str = "expires_at";
 const FIELD_DOWNLOADED_AT: &'static str = "downloaded_at";
 const FIELD_IP_ADDRESS: &'static str = "ip_address";
 
@@ -65,16 +67,20 @@ impl TryFrom<Row> for OnetimeLink {
     type Error = MyError;
 
     fn try_from(row: Row) -> Result<Self, Self::Error> {
-        let token = row.try_get(&FIELD_TOKEN).map_err(|why| format!("Could not get token! {}", why))?;
-        let filename = row.try_get(&FIELD_FILENAME).map_err(|why| format!("Could not get filename! {}", why))?;
-        let created_at = row.try_get(&FIELD_CREATED_AT).map_err(|why| format!("Could not get created_at! {}", why))?;
-        let downloaded_at = row.try_get(&FIELD_DOWNLOADED_AT).map_err(|why| format!("Could not get downloaded_at! {}", why))?;
-        let ip_address = row.try_get(&FIELD_IP_ADDRESS).map_err(|why| format!("Could not get ip_address! {}", why))?;
+        let token = row.try_get(&FIELD_TOKEN).map_err(|why| format!("Could not get {}! {}", FIELD_TOKEN, why))?;
+        let filename = row.try_get(&FIELD_FILENAME).map_err(|why| format!("Could not get {}! {}", FIELD_FILENAME, why))?;
+        let note = row.try_get(&FIELD_NOTE).map_err(|why| format!("Could not get {}! {}", FIELD_NOTE, why))?;
+        let created_at = row.try_get(&FIELD_CREATED_AT).map_err(|why| format!("Could not get {}! {}", FIELD_CREATED_AT, why))?;
+        let expires_at = row.try_get(&FIELD_EXPIRES_AT).map_err(|why| format!("Could not get {}! {}", FIELD_EXPIRES_AT, why))?;
+        let downloaded_at = row.try_get(&FIELD_DOWNLOADED_AT).map_err(|why| format!("Could not get {}! {}", FIELD_DOWNLOADED_AT, why))?;
+        let ip_address = row.try_get(&FIELD_IP_ADDRESS).map_err(|why| format!("Could not get {}! {}", FIELD_IP_ADDRESS, why))?;
 
         Ok(Self {
             token: token,
             filename: filename,
+            note: note,
             created_at: created_at,
+            expires_at: expires_at,
             downloaded_at: downloaded_at,
             ip_address: ip_address,
         })
@@ -115,6 +121,10 @@ impl Storage {
 // https://github.com/dtolnay/async-trait#non-threadsafe-futures
 #[async_trait(?Send)]
 impl OnetimeStorage for Storage {
+    fn name(&self) -> &'static str {
+        "Postgres"
+    }
+
     async fn add_file (&self, file: OnetimeFile) -> Result<bool, MyError> {
         match self.client().await?.execute(
             format!(
@@ -186,19 +196,23 @@ impl OnetimeStorage for Storage {
     async fn add_link (&self, link: OnetimeLink) -> Result<bool, MyError> {
         match self.client().await?.execute(
             format!(
-                "INSERT INTO {}.{} ({}, {}, {}, {}, {}) VALUES ($1, $2, $3, $4, $5)",
+                "INSERT INTO {}.{} ({}, {}, {}, {}, {}, {}, {}) VALUES ($1, $2, $3, $4, $5, $6, $7)",
                 self.schema,
                 self.links_table,
                 FIELD_TOKEN,
                 FIELD_FILENAME,
+                FIELD_NOTE,
                 FIELD_CREATED_AT,
+                FIELD_EXPIRES_AT,
                 FIELD_DOWNLOADED_AT,
                 FIELD_IP_ADDRESS,
             ).as_str(),
             &[
                 &link.token,
                 &link.filename,
+                &link.note,
                 &link.created_at,
+                &link.expires_at,
                 &link.downloaded_at,
                 &link.ip_address,
             ],
@@ -211,10 +225,12 @@ impl OnetimeStorage for Storage {
     async fn list_links (&self) -> Result<Vec<OnetimeLink>, MyError> {
         match self.client().await?.query(
             format!(
-                "SELECT {}, {}, {}, {}, {} FROM {}.{}",
+                "SELECT {}, {}, {}, {}, {}, {}, {} FROM {}.{}",
                 FIELD_TOKEN,
                 FIELD_FILENAME,
+                FIELD_NOTE,
                 FIELD_CREATED_AT,
+                FIELD_EXPIRES_AT,
                 FIELD_DOWNLOADED_AT,
                 FIELD_IP_ADDRESS,
                 self.schema,
@@ -231,10 +247,12 @@ impl OnetimeStorage for Storage {
     async fn get_link (&self, token: String) -> Result<OnetimeLink, MyError> {
         match self.client().await?.query_one(
             format!(
-                "SELECT {}, {}, {}, {}, {} FROM {}.{} WHERE {} = $1",
+                "SELECT {}, {}, {}, {}, {}, {}, {} FROM {}.{} WHERE {} = $1",
                 FIELD_TOKEN,
                 FIELD_FILENAME,
+                FIELD_NOTE,
                 FIELD_CREATED_AT,
+                FIELD_EXPIRES_AT,
                 FIELD_DOWNLOADED_AT,
                 FIELD_IP_ADDRESS,
                 self.schema,

@@ -149,13 +149,19 @@ pub async fn add_link (
         let n: u64 = rand::thread_rng().gen();
 
         let token = format!("{:016x}{:016x}", now, n);
-        println!("token {}", token);
-        let url = format!("/download/{}", token);
+
+        let expires_at = match payload.expires_at {
+            None => now + service.config.default_expiration_ms,
+            Some(v) => v,
+        };
+        println!("token {} expires_at {}", token, expires_at);
 
         let link = OnetimeLink {
             filename: payload.filename.clone(),
-            token: token,
+            token: token.clone(),
+            note: payload.note.clone(),
             created_at: now,
+            expires_at: expires_at,
             downloaded_at: None,
             ip_address: None,
         };
@@ -164,7 +170,7 @@ pub async fn add_link (
             Ok(_) => Ok(
                 HttpResponse::Ok()
                     .content_type("text/plain")
-                    .body(url)
+                    .body(token)
             ),
             Err(why) => Err(HttpResponse::InternalServerError().body(format!("Add link failed! {}", why))),
         }
@@ -192,15 +198,19 @@ pub async fn download_link (req: HttpRequest, service: web::Data<OnetimeDownload
     };
 
     if link.downloaded_at.is_some() {
-        return HttpResponse::NotFound().body("Already downloaded");
+        return HttpResponse::Gone().body("Already downloaded");
     }
 
     let now = service.time_provider.unix_ts_ms();
+    if link.expires_at < now {
+        return HttpResponse::Gone().body("Expired");
+    }
+
     let filename = link.filename.clone();
     match service.storage.mark_downloaded(link, ip_address, now).await {
         Err(why) => return HttpResponse::InternalServerError().body(format!("Mark downloaded failed! {}", why)),
         Ok(already_downloaded) => if already_downloaded {
-            return HttpResponse::NotFound().body("Already downloaded race");
+            return HttpResponse::Gone().body("Already downloaded race");
         },
     }
 

@@ -9,6 +9,12 @@ use dyn_clonable::clonable;
 use crate::time_provider::TimeProvider;
 
 
+const EMPTY_STRING: String = String::new();
+const DEFAULT_MAX_LEN_FILE: usize = 100000;
+const DEFAULT_MAX_LEN_VALUE: usize = 80;
+const DEFAULT_EXPIRATION_MS: i64 = 300000;
+
+
 pub type MyError = String;
 
 #[derive(Debug, Clone)]
@@ -18,13 +24,10 @@ pub struct OnetimeDownloaderConfig {
     pub api_key_links: String,
     pub max_len_file: usize,
     pub max_len_value: usize,
+    pub default_expiration_ms: i64,
 }
 
 impl OnetimeDownloaderConfig {
-    const EMPTY_STRING: String = String::new();
-    const DEFAULT_MAX_LEN_FILE: usize = 100000;
-    const DEFAULT_MAX_LEN_VALUE: usize = 80;
-
     pub fn env_var_string (name: &str, default: String) -> String {
         env::var(name).unwrap_or(default)
     }
@@ -40,11 +43,12 @@ impl OnetimeDownloaderConfig {
     // seems very ubiquitous: https://crates.io/crates/config
     pub fn from_env () -> OnetimeDownloaderConfig {
         OnetimeDownloaderConfig {
-            provider: Self::env_var_string("ONETIME_PROVIDER", Self::EMPTY_STRING),
-            api_key_files: Self::env_var_string("FILES_API_KEY", Self::EMPTY_STRING),
-            api_key_links: Self::env_var_string("LINKS_API_KEY", Self::EMPTY_STRING),
-            max_len_file: Self::env_var_parse("FILE_MAX_LEN", Self::DEFAULT_MAX_LEN_FILE),
-            max_len_value: Self::env_var_parse("VALUE_MAX_LEN", Self::DEFAULT_MAX_LEN_VALUE),
+            provider: Self::env_var_string("ONETIME_PROVIDER", EMPTY_STRING),
+            api_key_files: Self::env_var_string("FILES_API_KEY", EMPTY_STRING),
+            api_key_links: Self::env_var_string("LINKS_API_KEY", EMPTY_STRING),
+            max_len_file: Self::env_var_parse("FILE_MAX_LEN", DEFAULT_MAX_LEN_FILE),
+            max_len_value: Self::env_var_parse("VALUE_MAX_LEN", DEFAULT_MAX_LEN_VALUE),
+            default_expiration_ms: Self::env_var_parse("LINK_EXPIRATION", DEFAULT_EXPIRATION_MS),
         }
     }
 }
@@ -77,7 +81,9 @@ impl Serialize for OnetimeFile {
 pub struct OnetimeLink {
     pub token: String,
     pub filename: String,
+    pub note: Option<String>,
     pub created_at: i64,
+    pub expires_at: i64,
     pub downloaded_at: Option<i64>,
     pub ip_address: Option<String>,
 }
@@ -85,12 +91,15 @@ pub struct OnetimeLink {
 #[derive(Deserialize)]
 pub struct CreateLink {
     pub filename: String,
+    pub note: Option<String>,
+    pub expires_at: Option<i64>,
 }
 
 // https://github.com/dtolnay/async-trait#non-threadsafe-futures
 #[async_trait(?Send)]
 #[clonable]
 pub trait OnetimeStorage : Clone {
+    fn name(&self) -> &'static str;
     async fn add_file (&self, file: OnetimeFile) -> Result<bool, MyError>;
     async fn list_files (&self) -> Result<Vec<OnetimeFile>, MyError>;
     async fn get_file (&self, filename: String) -> Result<OnetimeFile, MyError>;

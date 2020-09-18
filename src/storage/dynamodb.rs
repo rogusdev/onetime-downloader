@@ -42,6 +42,8 @@ const FIELD_CREATED_AT: &'static str = "CreatedAt";
 const FIELD_UPDATED_AT: &'static str = "UpdatedAt";
 
 const FIELD_TOKEN: &'static str = "Token";
+const FIELD_NOTE: &'static str = "Note";
+const FIELD_EXPIRES_AT: &'static str = "ExpiresAt";
 const FIELD_DOWNLOADED_AT: &'static str = "DownloadedAt";
 const FIELD_IP_ADDRESS: &'static str = "IpAddress";
 
@@ -181,14 +183,18 @@ impl TryFrom<Row> for OnetimeLink {
     fn try_from(row: Row) -> Result<Self, Self::Error> {
         let token = row.get_s(&FIELD_TOKEN.to_string())?;
         let filename = row.get_s(&FIELD_FILENAME.to_string())?;
+        let note = row.get_os(&FIELD_NOTE.to_string())?;
         let created_at = row.get_n(&FIELD_CREATED_AT.to_string())?;
+        let expires_at = row.get_n(&FIELD_EXPIRES_AT.to_string())?;
         let downloaded_at = row.get_on(&FIELD_DOWNLOADED_AT.to_string())?;
         let ip_address = row.get_os(&FIELD_IP_ADDRESS.to_string())?;
 
         Ok(Self {
             token: token,
             filename: filename,
+            note: note,
             created_at: created_at,
+            expires_at: expires_at,
             downloaded_at: downloaded_at,
             ip_address: ip_address,
         })
@@ -210,6 +216,10 @@ impl Storage {
 // https://github.com/dtolnay/async-trait#non-threadsafe-futures
 #[async_trait(?Send)]
 impl OnetimeStorage for Storage {
+    fn name(&self) -> &'static str {
+        "Dynamodb"
+    }
+
     async fn add_file (&self, file: OnetimeFile) -> Result<bool, MyError> {
         let item = hashmap! {
             FIELD_FILENAME.to_string() => AttributeValue::from_s(file.filename),
@@ -277,7 +287,11 @@ impl OnetimeStorage for Storage {
             FIELD_TOKEN.to_string() => AttributeValue::from_s(link.token),
             FIELD_FILENAME.to_string() => AttributeValue::from_s(link.filename),
             FIELD_CREATED_AT.to_string() => AttributeValue::from_n(link.created_at),
+            FIELD_EXPIRES_AT.to_string() => AttributeValue::from_n(link.expires_at),
         };
+        if let Some(note) = link.note {
+            item.insert(FIELD_NOTE.to_string(), AttributeValue::from_s(note));
+        }
         if let Some(downloaded_at) = link.downloaded_at {
             item.insert(FIELD_DOWNLOADED_AT.to_string(), AttributeValue::from_n(downloaded_at));
         }
@@ -307,7 +321,9 @@ impl OnetimeStorage for Storage {
         let projection_expression = [
             TOKEN_SUBSTITUTE,
             FIELD_FILENAME,
+            FIELD_NOTE,
             FIELD_CREATED_AT,
+            FIELD_EXPIRES_AT,
             FIELD_DOWNLOADED_AT,
             FIELD_IP_ADDRESS,
         ].join(", ");
@@ -348,13 +364,17 @@ impl OnetimeStorage for Storage {
     }
 
     async fn mark_downloaded (&self, link: OnetimeLink, ip_address: String, downloaded_at: i64) -> Result<bool, MyError> {
-        let item = hashmap! {
+        let mut item = hashmap! {
             FIELD_TOKEN.to_string() => AttributeValue::from_s(link.token),
             FIELD_FILENAME.to_string() => AttributeValue::from_s(link.filename),
             FIELD_CREATED_AT.to_string() => AttributeValue::from_n(link.created_at),
+            FIELD_EXPIRES_AT.to_string() => AttributeValue::from_n(link.expires_at),
             FIELD_DOWNLOADED_AT.to_string() => AttributeValue::from_n(downloaded_at),
             FIELD_IP_ADDRESS.to_string() => AttributeValue::from_s(ip_address),
         };
+        if let Some(note) = link.note {
+            item.insert(FIELD_NOTE.to_string(), AttributeValue::from_s(note));
+        }
 
         let request = PutItemInput {
             item: item,
@@ -384,7 +404,7 @@ impl OnetimeStorage for Storage {
 
         match self.client.delete_item(request).await {
             Err(why) => Err(format!("Delete file failed: {}", why.to_string())),
-            Ok(output) => Ok(true),
+            Ok(_) => Ok(true),
         }
     }
 
@@ -397,7 +417,7 @@ impl OnetimeStorage for Storage {
 
         match self.client.delete_item(request).await {
             Err(why) => Err(format!("Delete link failed: {}", why.to_string())),
-            Ok(output) => Ok(true),
+            Ok(_) => Ok(true),
         }
     }
 }

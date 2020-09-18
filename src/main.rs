@@ -31,7 +31,7 @@ fn build_service () -> OnetimeDownloaderService {
         _ => Box::new(invalid::Storage { error: format!("Invalid or no storage provider given! '{}'", config.provider) })
     };
 
-    println!("created storage");
+    println!("created storage: {}", storage.name());
 
     OnetimeDownloaderService {
         time_provider: time_provider,

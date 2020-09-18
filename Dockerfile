@@ -32,6 +32,7 @@ RUN rm target/release/deps/onetime_downloader* \
 FROM ubuntu:bionic
 COPY --from=build /usr/src/onetime-downloader/target/release/onetime-downloader /usr/local/bin/
 
+# for ssl
 RUN apt-get update \
     && apt-get install -y ca-certificates \
     && rm -rf /var/lib/apt/lists/*
