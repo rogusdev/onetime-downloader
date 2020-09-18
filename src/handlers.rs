@@ -98,7 +98,7 @@ pub async fn add_file (
                 println!("'{}' filename '{}'", field_name, filename);
                 if field_name == "file" {
                     let val = collect_chunks(field, service.config.max_len_file).await?;
-                    println!("file:\n{:?}", val);
+                    //println!("file:\n{:?}", val);
                     contents = Some(Bytes::from(val));
                     file_filename = Some(filename.to_string());
                 }
